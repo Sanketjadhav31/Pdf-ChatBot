@@ -1,3 +1,4 @@
 Backend  = python -m uvicorn main:app --reload --port 5000
 frontend = npm run dev
 
+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
