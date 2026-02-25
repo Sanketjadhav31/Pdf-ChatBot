@@ -1,0 +1,23 @@
+# Testing dependencies for PDF Chatbot
+
+# Core testing framework
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# HTTP testing
+httpx==0.25.2
+
+# PDF generation for test fixtures
+PyPDF2==3.0.1
+reportlab==4.0.7
+
+# Mocking and fixtures
+pytest-mock==3.12.0
+faker==20.1.0
+
+# Performance testing (optional)
+pytest-benchmark==4.0.0
+
+# Test reporting (optional)
+pytest-html==4.1.1
