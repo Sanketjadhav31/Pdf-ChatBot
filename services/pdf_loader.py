@@ -22,9 +22,16 @@ def extract_chunks_from_pdf(
     Later this can be enhanced with heading detection and smarter chunking.
     """
     pdf_reader = PdfReader(BytesIO(file_bytes))
+    total_pages = len(pdf_reader.pages)
+    print(f"📖 Total pages in PDF: {total_pages}")
 
     chunks: List[Chunk] = []
     for page_index, page in enumerate(pdf_reader.pages):
+        # Show progress every 25 pages or on last page for faster processing
+        if (page_index + 1) % 25 == 0 or (page_index + 1) == total_pages:
+            progress = ((page_index + 1) / total_pages) * 100
+            print(f"   Extracting page {page_index + 1}/{total_pages} ({progress:.1f}%)")
+        
         text = page.extract_text() or ""
         cleaned = text.strip()
         if not cleaned:

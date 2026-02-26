@@ -29,3 +29,22 @@ body {
   background-color: rgb(71 85 105);
 }
 
+/* Smooth horizontal scrolling */
+.overflow-x-auto {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Hide scrollbar for horizontal scroll on hover */
+.overflow-x-auto::-webkit-scrollbar {
+  height: 6px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb {
+  background-color: rgb(51 65 85);
+  border-radius: 3px;
+}
+
+.overflow-x-auto:hover::-webkit-scrollbar-thumb {
+  background-color: rgb(71 85 105);
+}

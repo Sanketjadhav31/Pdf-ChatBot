@@ -2,23 +2,60 @@ import React from "react";
 
 export type ChatRole = "user" | "assistant";
 
+type Reference = {
+  documentId: string;
+  pageNumber: number;
+  documentHeading?: string | null;
+  paragraphHeading?: string | null;
+};
+
+type UploadedDocument = {
+  documentId: string;
+  filename: string;
+  uploadedAt: Date;
+};
+
 type Props = {
   role: ChatRole;
   content: string;
-  references?: {
-    documentId: string;
-    pageNumber: number;
-    documentHeading?: string | null;
-    paragraphHeading?: string | null;
-  }[];
+  references?: Reference[];
+  onViewReference?: (documentId: string, pageNumber: number) => void;
+  uploadedDocs?: UploadedDocument[];
 };
 
 export const ChatMessage: React.FC<Props> = ({
   role,
   content,
   references = [],
+  onViewReference,
+  uploadedDocs = [],
 }) => {
   const isUser = role === "user";
+
+  // Get filename from document ID
+  const getFilename = (documentId: string) => {
+    const doc = uploadedDocs.find(d => d.documentId === documentId);
+    return doc?.filename || documentId;
+  };
+
+  // Group references by document
+  const groupedReferences = React.useMemo(() => {
+    const groups: Record<string, Reference[]> = {};
+    references.forEach((ref) => {
+      const key = ref.documentId;
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(ref);
+    });
+    return groups;
+  }, [references]);
+
+  // Get unique pages for a document
+  const getUniquePages = (refs: Reference[]) => {
+    const pages = [...new Set(refs.map(r => r.pageNumber))].sort((a, b) => a - b);
+    return pages;
+  };
 
   return (
     <div className={`flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}>
@@ -41,33 +78,65 @@ export const ChatMessage: React.FC<Props> = ({
           <p className="whitespace-pre-wrap leading-relaxed">{content}</p>
 
           {!isUser && references.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-slate-700 space-y-2">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <div className="mt-3 pt-3 border-t border-slate-700/50">
+              <div className="flex items-center gap-1.5 mb-2">
+                <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
-                References
+                <span className="text-xs font-medium text-slate-300 uppercase tracking-wide">
+                  Sources ({references.length})
+                </span>
               </div>
-              {references.map((ref, idx) => (
-                <div 
-                  key={`${ref.documentId}-${ref.pageNumber}-${idx}`}
-                  className="text-xs bg-slate-900/50 rounded-lg p-2 space-y-1"
-                >
-                  {ref.documentHeading && (
-                    <div className="text-slate-300">
-                      <span className="text-slate-500">Document:</span> {ref.documentHeading}
+              
+              <div className="space-y-1.5">
+                {Object.entries(groupedReferences).map(([documentId, refs], idx) => {
+                  const pages = getUniquePages(refs);
+                  const filename = getFilename(documentId);
+                  const firstRef = refs[0];
+                  
+                  return (
+                    <div 
+                      key={`${documentId}-${idx}`}
+                      className="bg-slate-900/50 rounded-md border border-slate-700/40 overflow-hidden hover:border-indigo-500/30 transition-colors"
+                    >
+                      <div className="p-2">
+                        {/* Document Name and Pages in one row */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <div className="w-4 h-4 rounded bg-red-500/10 flex items-center justify-center">
+                              <svg className="w-2.5 h-2.5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                            <p className="text-xs font-medium text-slate-200 truncate max-w-[120px]" title={filename}>
+                              {filename}
+                            </p>
+                          </div>
+                          
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <span className="text-xs text-slate-500">•</span>
+                            {pages.map((page, pageIdx) => (
+                              <button
+                                key={`${documentId}-page-${page}-${pageIdx}`}
+                                onClick={() => onViewReference?.(documentId, page)}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 hover:border-indigo-500/40 transition-all group"
+                                title={`Open page ${page}`}
+                              >
+                                <span className="text-xs font-medium text-indigo-300 group-hover:text-indigo-200">
+                                  {page}
+                                </span>
+                                <svg className="w-2.5 h-2.5 text-indigo-400 group-hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                </svg>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  )}
-                  {ref.paragraphHeading && (
-                    <div className="text-slate-300">
-                      <span className="text-slate-500">Section:</span> {ref.paragraphHeading}
-                    </div>
-                  )}
-                  <div className="text-slate-400">
-                    <span className="text-slate-500">Page:</span> {ref.pageNumber}
-                  </div>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -83,4 +152,3 @@ export const ChatMessage: React.FC<Props> = ({
     </div>
   );
 };
-
