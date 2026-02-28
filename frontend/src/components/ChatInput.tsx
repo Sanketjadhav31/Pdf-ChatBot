@@ -23,6 +23,7 @@ type Props = {
   uploadedDocs?: UploadedDocument[];
   onViewDoc?: (doc: UploadedDocument) => void;
   onDeleteDoc?: (documentId: string) => void;
+  hasDocuments?: boolean;
 };
 
 export const ChatInput: React.FC<Props> = ({ 
@@ -34,7 +35,8 @@ export const ChatInput: React.FC<Props> = ({
   onUploadProgress,
   uploadedDocs = [],
   onViewDoc,
-  onDeleteDoc
+  onDeleteDoc,
+  hasDocuments = false
 }) => {
   const [value, setValue] = React.useState("");
   const [uploadingFiles, setUploadingFiles] = React.useState<UploadingFile[]>([]);
@@ -71,7 +73,7 @@ export const ChatInput: React.FC<Props> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed || disabled || !hasDocuments) return;
     onSend(trimmed);
     setValue("");
     if (textareaRef.current) {
@@ -185,17 +187,17 @@ export const ChatInput: React.FC<Props> = ({
           <textarea
             ref={textareaRef}
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-slate-500 resize-none max-h-[200px] min-h-[24px]"
-            placeholder="Message PDF Chatbot..."
+            placeholder={hasDocuments ? "Message PDF Chatbot..." : "Upload a PDF to start chatting..."}
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            disabled={disabled}
+            disabled={disabled || !hasDocuments}
             rows={1}
           />
         </div>
         <button
           type="submit"
-          disabled={disabled || !value.trim()}
+          disabled={disabled || !value.trim() || !hasDocuments}
           className="flex-shrink-0 p-3 rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 disabled:bg-slate-700 disabled:text-slate-500 transition-colors shadow-lg disabled:shadow-none"
           aria-label="Send message"
         >

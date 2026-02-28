@@ -299,6 +299,7 @@ const App: React.FC = () => {
                 uploadedDocs={uploadedDocs}
                 onViewDoc={handleViewDoc}
                 onDeleteDoc={handleDeleteDoc}
+                hasDocuments={uploadedDocs.length > 0}
               />
               {uploadedDocs.length === 0 && (
                 <p className="mt-2 text-xs text-center text-amber-400/80">

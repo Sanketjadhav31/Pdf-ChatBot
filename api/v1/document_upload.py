@@ -8,7 +8,6 @@ from models.schemas import UploadResponse
 from services.pdf_loader import extract_chunks_from_pdf
 from services.rag_service import vector_store
 
-
 router = APIRouter(tags=["documents"])
 
 # Store uploaded PDFs temporarily

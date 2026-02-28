@@ -11,7 +11,7 @@ router = APIRouter(tags=["chat"])
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """
-    Chat endpoint that uses RAG with real LLM (Ollama or OpenAI).
+    Chat endpoint that uses RAG with real LLM (Google or Ollama).
     """
     result = chat_orchestrator.handle_chat(request)
     

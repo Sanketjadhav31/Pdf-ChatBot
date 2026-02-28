@@ -95,10 +95,6 @@ class InMemoryVectorStore:
 
 
 class ChatOrchestrator:
-    """
-    High-level orchestration for chat, applying basic guardrails.
-    """
-
     def __init__(self, store: InMemoryVectorStore) -> None:
         self._store = store
         self._sessions: Dict[str, List[str]] = {}
@@ -107,17 +103,6 @@ class ChatOrchestrator:
         session_id = request.session_id or str(uuid.uuid4())
         history = self._sessions.setdefault(session_id, [])
         history.append(request.question)
-
-        # Out-of-scope handling: if there are no documents yet
-        if self._store.size == 0:
-            return ChatResponse(
-                answer=(
-                    "No documents have been uploaded yet. "
-                    "Please upload one or more PDFs and then ask a question based on their content."
-                ),
-                references=[],
-                session_id=session_id,
-            )
 
         query_lower = request.question.lower().strip()
         
