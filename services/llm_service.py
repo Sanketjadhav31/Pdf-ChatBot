@@ -19,36 +19,48 @@ class LLMService:
         print(f"Initialized Google Gemini model: {self.model_name}")
     
     async def generate_response(self, prompt: str, context: str) -> tuple[str, bool]:
-        """Generate response using Google Gemini
-        Returns: (answer, is_relevant) where is_relevant indicates if answer uses the context
+        """Generate response using Google Gemini.
+
+        Returns: (answer, is_relevant) where is_relevant indicates if answer uses the context.
+        The answer is formatted as clear bullet/numbered points when appropriate.
         """
-        
+
         # Check if user requested specific word count
         import re
-        word_count_match = re.search(r'in (\d+) words?', prompt.lower())
+
+        word_count_match = re.search(r"in (\d+) words?", prompt.lower())
         word_constraint = ""
         if word_count_match:
             word_count = word_count_match.group(1)
-            word_constraint = f"\n\nIMPORTANT: Your answer MUST be approximately {word_count} words. Be concise and precise."
-        
-        full_prompt = f"""Based on the following context from the PDF document, answer the question accurately.
+            word_constraint = (
+                f"\n\nIMPORTANT: Your answer MUST be approximately {word_count} words. "
+                f"Be concise and precise."
+            )
+
+        formatting_instructions = """
+Answer in a structured, easy-to-read way:
+- For summaries or \"key points\", respond as short numbered points (1., 2., 3., ...).
+- If the user explicitly asks for more detailed points, you may nest sub-points as (a), (b), (c) under each number.
+- Keep each point focused and avoid long paragraphs.
+- Only answer using information that is clearly supported by the context.
+"""
+
+        full_prompt = f"""You are a PDF chatbot. Based ONLY on the context below, answer the user's question.
 
 Context from PDF:
 {context}
 
-Question: {prompt}{word_constraint}
+User question:
+{prompt}
 
-IMPORTANT INSTRUCTIONS:
-1. If the context contains relevant information to answer the question, provide a clear answer with specific references to page numbers.
-2. If the context does NOT contain relevant information to answer the question, respond with: "I cannot find relevant information about this in the uploaded documents."
-3. Do NOT make up information or answer from general knowledge if it's not in the context.
-4. Only answer based on what's explicitly stated in the provided context."""
-        
+{formatting_instructions}
+{word_constraint}
+"""
         try:
             print(f"Calling Google Gemini API with model: {self.model_name}")
             response = self.client.models.generate_content(
-                model=self.model_name,  # Use the full model name with 'models/' prefix
-                contents=full_prompt
+                model=self.model_name,
+                contents=full_prompt,
             )
             
             answer = response.text

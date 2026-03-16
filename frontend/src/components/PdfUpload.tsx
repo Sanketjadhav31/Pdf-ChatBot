@@ -4,18 +4,30 @@ type Props = {
   onUploaded: (info: { documentId: string; filename: string }) => void;
   onUploadStart?: (filename: string) => void;
   onUploadProgress?: (filename: string, progress: number) => void;
-  variant?: "sidebar" | "large" | "input";
+  variant?: "sidebar" | "large" | "input" | "hidden";
+  /** Ref to expose triggerUpload() so other components can trigger the same file input */
+  uploadTriggerRef?: React.MutableRefObject<(() => void) | null>;
+  authToken?: string | null;
 };
 
 const API_BASE = "http://localhost:5000/api/v1";
 
-export const PdfUpload: React.FC<Props> = ({ 
-  onUploaded, 
+export const PdfUpload: React.FC<Props> = ({
+  onUploaded,
   onUploadStart,
   onUploadProgress,
-  variant = "sidebar" 
+  variant = "sidebar",
+  uploadTriggerRef,
+  authToken,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  React.useEffect(() => {
+    if (uploadTriggerRef) {
+      uploadTriggerRef.current = () => fileInputRef.current?.click();
+      return () => { uploadTriggerRef.current = null; };
+    }
+  }, [uploadTriggerRef]);
 
   const handleFileChange = async (
     event: React.ChangeEvent<HTMLInputElement>
@@ -55,11 +67,19 @@ export const PdfUpload: React.FC<Props> = ({
       const uploadPromise = new Promise<any>((resolve, reject) => {
         xhr.addEventListener("load", () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            console.log(`✅ Upload complete, processing response...`);
             resolve(JSON.parse(xhr.responseText));
           } else {
             console.error(`❌ Upload failed with status: ${xhr.status}`);
-            reject(new Error("Upload failed"));
+            let message = `Upload failed (${xhr.status})`;
+            try {
+              const data = JSON.parse(xhr.responseText);
+              if (data?.detail) {
+                message = data.detail;
+              }
+            } catch {
+              // ignore JSON parse error and keep default message
+            }
+            reject(new Error(message));
           }
         });
 
@@ -67,21 +87,31 @@ export const PdfUpload: React.FC<Props> = ({
           console.error(`❌ Upload error occurred`);
           reject(new Error("Upload failed"));
         });
+        
         xhr.addEventListener("abort", () => {
           console.error(`❌ Upload cancelled`);
           reject(new Error("Upload cancelled"));
         });
 
         xhr.open("POST", `${API_BASE}/documents/upload`);
+        if (authToken) {
+          xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
+        }
         xhr.send(formData);
       });
 
       const data = await uploadPromise;
       console.log(`✨ Document processed:`, data);
+
+      // Ensure we show 100% once server responds, then mark upload complete
+      onUploadProgress?.(file.name, 100);
+      await new Promise((resolve) => setTimeout(resolve, 400));
       onUploaded({ documentId: data.document_id, filename: data.filename });
-    } catch (error) {
+      onUploadProgress?.(file.name, -1);
+    } catch (error: any) {
       console.error(`❌ Upload failed:`, error);
-      alert(`Failed to upload ${file.name}. Please try again.`);
+      const message = error?.message || `Failed to upload ${file.name}. Please try again.`;
+      alert(message);
       // Remove from uploading list on error
       onUploadProgress?.(file.name, -1);
     }
@@ -103,6 +133,22 @@ export const PdfUpload: React.FC<Props> = ({
           onChange={handleFileChange}
         />
       </label>
+    );
+  }
+
+  if (variant === "hidden") {
+    return (
+      <>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf"
+          multiple
+          className="sr-only"
+          onChange={handleFileChange}
+          aria-hidden
+        />
+      </>
     );
   }
 

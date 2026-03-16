@@ -12,15 +12,6 @@ from services.llm_service import llm_service
 
 
 class InMemoryVectorStore:
-    """
-    Simple in-memory vector store for step 1.
-
-    This uses random embeddings as placeholders so that the
-    API and similarity flow are in place. Later you can replace
-    `embed_text` with a real embedding model and back this store
-    with FAISS/Chroma/Pinecone.
-    """
-
     def __init__(self) -> None:
         self._chunks: List[Chunk] = []
         self._embeddings: List[np.ndarray] = []
@@ -54,6 +45,71 @@ class InMemoryVectorStore:
         print(f"✅ Successfully embedded {len(chunks)} chunks")
         print(f"📚 Total chunks in vector store: {self.size}")
         print(f"{'='*60}\n")
+
+    def delete_chunks_by_document(self, document_id: str) -> int:
+        """Delete all chunks belonging to a specific document"""
+        indices_to_keep = []
+        deleted_count = 0
+        
+        for i, chunk in enumerate(self._chunks):
+            if chunk.metadata.document_id == document_id:
+                deleted_count += 1
+            else:
+                indices_to_keep.append(i)
+        
+        # Rebuild the lists without the deleted chunks
+        self._chunks = [self._chunks[i] for i in indices_to_keep]
+        self._embeddings = [self._embeddings[i] for i in indices_to_keep]
+        
+        print(f"🗑️  Deleted {deleted_count} chunks for document {document_id}")
+        print(f"📚 Remaining chunks in vector store: {self.size}")
+        
+        return deleted_count
+    def add_chunks(self, chunks: List[Chunk]) -> None:
+        """Add chunks with batch embedding for better performance"""
+        if not chunks:
+            return
+
+        # Extract all text content
+        texts = [chunk.content for chunk in chunks]
+
+        # Batch embed all texts at once (much faster than one-by-one)
+        print(f"\n{'='*60}")
+        print(f"📊 EMBEDDING PROGRESS")
+        print(f"{'='*60}")
+        print(f"Total chunks to embed: {len(texts)}")
+        print(f"Starting batch embedding...")
+
+        embeddings = embedding_service.embed_texts(texts)
+
+        # Add to store
+        for chunk, embedding in zip(chunks, embeddings):
+            self._chunks.append(chunk)
+            self._embeddings.append(embedding)
+
+        print(f"✅ Successfully embedded {len(chunks)} chunks")
+        print(f"📚 Total chunks in vector store: {self.size}")
+        print(f"{'='*60}\n")
+
+    def delete_chunks_by_document(self, document_id: str) -> int:
+        """Delete all chunks belonging to a specific document"""
+        indices_to_keep = []
+        deleted_count = 0
+
+        for i, chunk in enumerate(self._chunks):
+            if chunk.metadata.document_id == document_id:
+                deleted_count += 1
+            else:
+                indices_to_keep.append(i)
+
+        # Rebuild the lists without the deleted chunks
+        self._chunks = [self._chunks[i] for i in indices_to_keep]
+        self._embeddings = [self._embeddings[i] for i in indices_to_keep]
+
+        print(f"🗑️  Deleted {deleted_count} chunks for document {document_id}")
+        print(f"📚 Remaining chunks in vector store: {self.size}")
+
+        return deleted_count
 
     def embed_text(self, text: str) -> np.ndarray:
         # Use real embedding service
@@ -105,25 +161,61 @@ class ChatOrchestrator:
         history.append(request.question)
 
         query_lower = request.question.lower().strip()
-        
+
+        # If we have no chunks loaded at all, it's usually because the
+        # server has just restarted (the in‑memory store is empty while
+        # the UI may still show uploaded PDFs). Surface a clear message
+        # instead of saying the question is "not related".
+        if self._store.size == 0:
+            return ChatResponse(
+                answer=(
+                    "I don't have any documents loaded right now. "
+                    "Please upload a PDF again so I can answer questions about it."
+                ),
+                references=[],
+                session_id=session_id,
+            )
+
         # Try with a lower threshold first (0.2 instead of 0.3)
-        # This helps with short queries and specific names
+        # This helps with short queries and specific names.
         results = self._store.search(request.question, similarity_threshold=0.2, top_k=10)
 
         if not results:
-            # If no results, try with even lower threshold
+            # If no results, try with even lower threshold.
             print(f"Debug: No results with threshold 0.2, trying with 0.0")
             results = self._store.search(request.question, similarity_threshold=0.0, top_k=10)
-            
+
             if not results:
-                return ChatResponse(
-                    answer=(
-                        "This question is not related to the uploaded documents. "
-                        "Please ask a question based on the document content."
-                    ),
-                    references=[],
-                    session_id=session_id,
-                )
+                # As a final fallback, treat generic prompts like
+                # "summarize this PDF" or "explain key points" as a
+                # request to work with the whole document, not reject it.
+                summary_keywords = [
+                    "summary",
+                    "summarize",
+                    "summrise",
+                    "summarise",
+                    "key points",
+                    "key point",
+                    "explain",
+                    "overview",
+                ]
+                if any(k in query_lower for k in summary_keywords):
+                    # Use the first few chunks as context for a high‑level
+                    # summary answer.
+                    print("Debug: No semantic hits, using first chunks for summary request.")
+                    results = [
+                        (chunk, 1.0)
+                        for chunk in getattr(self._store, "_chunks", [])[:10]
+                    ]
+                else:
+                    return ChatResponse(
+                        answer=(
+                            "This question is not related to the uploaded documents. "
+                            "Please ask a question based on the document content."
+                        ),
+                        references=[],
+                        session_id=session_id,
+                    )
 
         # Build context from top results with page numbers
         context_parts = []
@@ -139,12 +231,12 @@ class ChatOrchestrator:
         added_keys = set()
 
         # Only include top chunks as references
-        # Filter by similarity threshold of 0.6 (60% similarity)
+        # Filter by similarity threshold of 0.5 (50% similarity)
         # This ensures only truly relevant pages are shown as sources
         # Adjust this value if you want more/fewer sources:
         # - Higher (0.65-0.7): Very strict, only most relevant pages
         # - Lower (0.4-0.5): More lenient, includes somewhat related pages
-        REFERENCE_THRESHOLD = 0.6
+        REFERENCE_THRESHOLD = 0.5
         
         for chunk, score in results[:5]:
             print(f"Debug: Evaluating chunk - Page {chunk.metadata.page_number}, Score: {score:.4f}, Threshold: {REFERENCE_THRESHOLD}")

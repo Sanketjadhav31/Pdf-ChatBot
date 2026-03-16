@@ -15,19 +15,28 @@ type UploadedDocument = {
   uploadedAt: Date;
 };
 
+type AttachedDoc = {
+  documentId: string;
+  filename: string;
+};
+
 type Props = {
   role: ChatRole;
   content: string;
+  attachedDocs?: AttachedDoc[];
   references?: Reference[];
   onViewReference?: (documentId: string, pageNumber: number) => void;
+  onOpenDocument?: (documentId: string) => void;
   uploadedDocs?: UploadedDocument[];
 };
 
 export const ChatMessage: React.FC<Props> = ({
   role,
   content,
+  attachedDocs = [],
   references = [],
   onViewReference,
+  onOpenDocument,
   uploadedDocs = [],
 }) => {
   const isUser = role === "user";
@@ -58,7 +67,7 @@ export const ChatMessage: React.FC<Props> = ({
   };
 
   return (
-    <div className={`flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex gap-4 msg-enter ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
         <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
           <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -70,11 +79,36 @@ export const ChatMessage: React.FC<Props> = ({
       <div className={`flex flex-col ${isUser ? "items-end" : "items-start"} max-w-[75%]`}>
         <div
           className={`rounded-2xl px-4 py-3 text-sm ${
-            isUser
-              ? "bg-indigo-600 text-white"
-              : "bg-slate-800 text-slate-50"
+            isUser ? "msg-user" : "msg-bot"
           }`}
         >
+          {isUser && attachedDocs.length > 0 && (
+            <div className="mb-3 space-y-2">
+              {attachedDocs.map((doc) => (
+                <button
+                  key={doc.documentId}
+                  type="button"
+                  onClick={() => onOpenDocument?.(doc.documentId)}
+                  className="w-full text-left flex items-center gap-3 p-3 rounded-xl bg-white/10 border border-white/15 hover:bg-white/15 transition-colors"
+                  title={doc.filename}
+                >
+                  <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-red-500/15 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-red-300" fill="currentColor" viewBox="0 0 20 20">
+                      <path
+                        fillRule="evenodd"
+                        d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-white truncate">{doc.filename}</div>
+                    <div className="text-xs text-white/70">PDF</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
           <p className="whitespace-pre-wrap leading-relaxed">{content}</p>
 
           {!isUser && references.length > 0 && (
@@ -92,7 +126,6 @@ export const ChatMessage: React.FC<Props> = ({
                 {Object.entries(groupedReferences).map(([documentId, refs], idx) => {
                   const pages = getUniquePages(refs);
                   const filename = getFilename(documentId);
-                  const firstRef = refs[0];
                   
                   return (
                     <div 
@@ -112,7 +145,6 @@ export const ChatMessage: React.FC<Props> = ({
                               {filename}
                             </p>
                           </div>
-                          
                           <div className="flex items-center gap-1 flex-wrap">
                             <span className="text-xs text-slate-500">•</span>
                             {pages.map((page, pageIdx) => (
@@ -120,7 +152,7 @@ export const ChatMessage: React.FC<Props> = ({
                                 key={`${documentId}-page-${page}-${pageIdx}`}
                                 onClick={() => onViewReference?.(documentId, page)}
                                 className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 hover:border-indigo-500/40 transition-all group"
-                                title={`Open page ${page}`}
+                                title={`Open reference page ${page}`}
                               >
                                 <span className="text-xs font-medium text-indigo-300 group-hover:text-indigo-200">
                                   {page}

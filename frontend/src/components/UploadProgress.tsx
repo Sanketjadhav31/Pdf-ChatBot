@@ -45,7 +45,11 @@ export const UploadProgress: React.FC<Props> = ({ uploadingFiles, onCancel }) =>
                 {truncateFilename(file.filename)}
               </p>
               <p className="text-xs text-slate-400">
-                {file.progress < 100 ? `Uploading... ${file.progress}%` : 'Processing...'}
+                {file.progress < 90 
+                  ? `Uploading... ${file.progress}%` 
+                  : file.progress < 100 
+                    ? 'Processing on server...' 
+                    : 'Finalizing...'}
               </p>
             </div>
             {onCancel && file.progress < 100 && (
