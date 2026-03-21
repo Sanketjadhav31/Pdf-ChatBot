@@ -37,6 +37,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
+    username = Column(String(255), nullable=False)
     hashed_password = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -55,6 +56,19 @@ class ChatSession(Base):
 
     user = relationship("User", back_populates="chat_sessions")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+
+
+class ChatSessionDocument(Base):
+    """
+    Association table: which uploaded documents were used for a given chat session.
+    This allows session reconnection to restore PDF context from the DB.
+    """
+
+    __tablename__ = "chat_session_documents"
+
+    session_id = Column(String(64), ForeignKey("chat_sessions.id"), primary_key=True, index=True)
+    document_id = Column(String(64), ForeignKey("uploaded_documents.id"), primary_key=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class ChatMessage(Base):
@@ -83,9 +97,74 @@ class UploadedDocument(Base):
     user = relationship("User", back_populates="uploaded_documents")
 
 
+class EmbeddingIndexMetadata(Base):
+    """
+    Stores embedding/index compatibility metadata so model swaps are detected
+    before vectors are written with mismatched dimensions.
+    """
+
+    __tablename__ = "embedding_index_metadata"
+
+    index_name = Column(String(255), primary_key=True)
+    embedding_model_name = Column(String(255), nullable=False)
+    embedding_dimension = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 def init_db() -> None:
     """Create all tables. Call this from startup."""
     Base.metadata.create_all(bind=engine)
+
+
+def ensure_embedding_index_metadata(
+    embedding_model_name: str,
+    embedding_dimension: int,
+    index_name: str = "in_memory_default",
+) -> None:
+    """
+    Fail fast if existing index metadata does not match active embedding config.
+    Create metadata on first run.
+    """
+    db = SessionLocal()
+    try:
+        existing = (
+            db.query(EmbeddingIndexMetadata)
+            .filter(EmbeddingIndexMetadata.index_name == index_name)
+            .first()
+        )
+
+        if existing is None:
+            db.add(
+                EmbeddingIndexMetadata(
+                    index_name=index_name,
+                    embedding_model_name=embedding_model_name,
+                    embedding_dimension=embedding_dimension,
+                )
+            )
+            db.commit()
+            print(
+                f"Created embedding index metadata: index={index_name}, "
+                f"model={embedding_model_name}, dimension={embedding_dimension}"
+            )
+            return
+
+        if existing.embedding_dimension != embedding_dimension:
+            raise RuntimeError(
+                "Embedding dimension mismatch for index "
+                f"'{index_name}': existing={existing.embedding_dimension}, "
+                f"current={embedding_dimension}. Recreate the index before startup."
+            )
+
+        if existing.embedding_model_name != embedding_model_name:
+            print(
+                "⚠️ Embedding model changed while dimension stayed compatible: "
+                f"existing={existing.embedding_model_name}, current={embedding_model_name}"
+            )
+            existing.embedding_model_name = embedding_model_name
+            db.commit()
+    finally:
+        db.close()
 
 
 def get_db() -> Generator[Session, None, None]:

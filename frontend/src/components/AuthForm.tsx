@@ -3,12 +3,13 @@ import React from "react";
 const API_BASE = "http://localhost:5000/api/v1";
 
 type Props = {
-  onAuthenticated: (token: string, email: string) => void;
+  onAuthenticated: (token: string, email: string, username?: string) => void;
 };
 
 export const AuthForm: React.FC<Props> = ({ onAuthenticated }) => {
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [username, setUsername] = React.useState("");
   const [mode, setMode] = React.useState<"login" | "register">("login");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -16,20 +17,27 @@ export const AuthForm: React.FC<Props> = ({ onAuthenticated }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) return;
+    if (mode === "register" && !username) {
+      setError("Username is required for registration");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
+      const body = mode === "register" 
+        ? { email, password, username }
+        : { email, password };
       const res = await fetch(`${API_BASE}/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Authentication failed");
       }
       const data = await res.json();
-      onAuthenticated(data.access_token, data.user.email);
+      onAuthenticated(data.access_token, data.user.email, data.user.username);
     } catch (err: any) {
       setError(err.message || "Authentication failed");
     } finally {
@@ -39,6 +47,19 @@ export const AuthForm: React.FC<Props> = ({ onAuthenticated }) => {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {mode === "register" && (
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-slate-300">Username</label>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+            placeholder="Your name"
+            required={mode === "register"}
+          />
+        </div>
+      )}
       <div className="space-y-2">
         <label className="block text-xs font-medium text-slate-300">Email</label>
         <input
@@ -77,4 +98,3 @@ export const AuthForm: React.FC<Props> = ({ onAuthenticated }) => {
     </form>
   );
 };
-

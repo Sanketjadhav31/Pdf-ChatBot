@@ -1,4 +1,5 @@
 import React from "react";
+import ReactMarkdown from "react-markdown";
 
 export type ChatRole = "user" | "assistant";
 
@@ -7,6 +8,8 @@ type Reference = {
   pageNumber: number;
   documentHeading?: string | null;
   paragraphHeading?: string | null;
+  snippet?: string | null;
+  snippetHover?: string | null;
 };
 
 type UploadedDocument = {
@@ -41,10 +44,84 @@ export const ChatMessage: React.FC<Props> = ({
 }) => {
   const isUser = role === "user";
 
+  const [sourcesExpanded, setSourcesExpanded] = React.useState(false);
+  const [expandedRefKey, setExpandedRefKey] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!sourcesExpanded) {
+      setExpandedRefKey(null);
+    }
+  }, [sourcesExpanded]);
+
   // Get filename from document ID
   const getFilename = (documentId: string) => {
     const doc = uploadedDocs.find(d => d.documentId === documentId);
     return doc?.filename || documentId;
+  };
+
+  const normalizeSnippet = (t: string) => t.replace(/\s+/g, " ").trim();
+
+  const extractHeaderToStrip = (snippets: string[]) => {
+    const cleaned = snippets.map(normalizeSnippet).filter(Boolean);
+    if (cleaned.length === 0) return "";
+    if (cleaned.length < 2) return "";
+
+    const prefixLen = 30;
+    const firstPrefixes = cleaned.map((s) => s.slice(0, prefixLen));
+    const counts: Record<string, number> = {};
+    for (const p of firstPrefixes) {
+      if (!p) continue;
+      counts[p] = (counts[p] || 0) + 1;
+    }
+
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) return "";
+
+    const [topPrefix, topCount] = entries[0];
+    const requiredCount = Math.ceil(cleaned.length * 0.5);
+    if (topCount < requiredCount) return "";
+
+    // Common header phrase heuristic: many PDFs repeat a header ending with "years".
+    const sample = cleaned.find((s) => s.startsWith(topPrefix)) || cleaned[0];
+    const sampleLower = sample.toLowerCase();
+    const yearsIdx = sampleLower.indexOf("years");
+    if (yearsIdx !== -1) {
+      const candidate = sample.slice(0, yearsIdx + "years".length).trim();
+      const candidateCount = cleaned.filter((s) =>
+        s.toLowerCase().startsWith(candidate.toLowerCase())
+      ).length;
+      if (candidateCount >= requiredCount) return candidate;
+    }
+
+    return topPrefix;
+  };
+
+  const cleanEvidenceSnippet = (
+    raw: string | null | undefined,
+    headerToStrip: string
+  ) => {
+    let t = normalizeSnippet(raw || "");
+    if (!t) return "";
+
+    if (headerToStrip) {
+      const tLower = t.toLowerCase();
+      const headerLower = headerToStrip.toLowerCase();
+      if (tLower.startsWith(headerLower)) {
+        t = t.slice(headerToStrip.length).trim();
+      }
+    }
+
+    // Remove leftover separators/quotes after stripping headers.
+    t = t.replace(/^["“”'’]+/, "").trim();
+    t = t.replace(/^[-–—:•\s]+/, "").trim();
+
+    // Prefer showing the first 1-2 sentences (usually the evidence sentence).
+    const sentences = t.match(/[^.!?]+[.!?]+/g) || [];
+    if (sentences.length > 0) {
+      return normalizeSnippet(sentences.slice(0, 2).join(" "));
+    }
+
+    return t;
   };
 
   // Group references by document
@@ -59,12 +136,6 @@ export const ChatMessage: React.FC<Props> = ({
     });
     return groups;
   }, [references]);
-
-  // Get unique pages for a document
-  const getUniquePages = (refs: Reference[]) => {
-    const pages = [...new Set(refs.map(r => r.pageNumber))].sort((a, b) => a - b);
-    return pages;
-  };
 
   return (
     <div className={`flex gap-4 msg-enter ${isUser ? "justify-end" : "justify-start"}`}>
@@ -109,66 +180,219 @@ export const ChatMessage: React.FC<Props> = ({
               ))}
             </div>
           )}
-          <p className="whitespace-pre-wrap leading-relaxed">{content}</p>
+          <div className="prose prose-invert max-w-none text-sm leading-relaxed">
+            <ReactMarkdown
+              components={{
+                h1: ({ node, ...props }) => (
+                  <h1
+                    className="text-lg font-semibold text-slate-50 border-b border-white/10 pb-1 mb-2"
+                    {...props}
+                  />
+                ),
+                h2: ({ node, ...props }) => (
+                  <h2
+                    className="text-base font-semibold text-slate-50 border-b border-white/10 pb-1 mb-2"
+                    {...props}
+                  />
+                ),
+                h3: ({ node, ...props }) => (
+                  <h3
+                    className="text-sm font-semibold text-slate-50 mb-1"
+                    {...props}
+                  />
+                ),
+                strong: ({ node, ...props }) => (
+                  <strong className="font-semibold text-slate-50" {...props} />
+                ),
+                ul: ({ node, ...props }) => (
+                  <ul className="list-disc list-inside space-y-1 text-slate-100" {...props} />
+                ),
+                ol: ({ node, ...props }) => (
+                  <ol className="list-decimal list-inside space-y-1 text-slate-100" {...props} />
+                ),
+                li: ({ node, ...props }) => (
+                  <li className="text-sm leading-relaxed" {...props} />
+                ),
+                p: ({ node, ...props }) => (
+                  <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />
+                ),
+                code: ({ node,  ...props }) =>
+                  node ? (
+                    <code
+                      className="px-1.5 py-0.5 rounded bg-slate-900/70 text-[0.8rem] text-indigo-200"
+                      {...props}
+                    />
+                  ) : (
+                    <code
+                      className="block p-2 rounded bg-slate-900/80 text-xs text-indigo-100 overflow-x-auto"
+                      {...props}
+                    />
+                  ),
+              }}
+            >
+              {content}
+            </ReactMarkdown>
+          </div>
 
           {!isUser && references.length > 0 && (
             <div className="mt-3 pt-3 border-t border-slate-700/50">
-              <div className="flex items-center gap-1.5 mb-2">
-                <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              <button
+                type="button"
+                onClick={() => setSourcesExpanded((v) => !v)}
+                className="w-full flex items-center justify-between gap-3 cursor-pointer select-none"
+                aria-expanded={sourcesExpanded}
+              >
+                <div className="flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <span className="text-xs font-medium text-slate-300 uppercase tracking-wide">
+                    Sources ({references.length})
+                  </span>
+                </div>
+
+                <svg
+                  className={`w-4 h-4 text-slate-400 transition-transform ${sourcesExpanded ? "rotate-180" : "rotate-0"}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
-                <span className="text-xs font-medium text-slate-300 uppercase tracking-wide">
-                  Sources ({references.length})
-                </span>
-              </div>
-              
-              <div className="space-y-1.5">
-                {Object.entries(groupedReferences).map(([documentId, refs], idx) => {
-                  const pages = getUniquePages(refs);
-                  const filename = getFilename(documentId);
-                  
-                  return (
-                    <div 
-                      key={`${documentId}-${idx}`}
-                      className="bg-slate-900/50 rounded-md border border-slate-700/40 overflow-hidden hover:border-indigo-500/30 transition-colors"
-                    >
-                      <div className="p-2">
-                        {/* Document Name and Pages in one row */}
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
-                            <div className="w-4 h-4 rounded bg-red-500/10 flex items-center justify-center">
+              </button>
+
+              {sourcesExpanded && (
+                <div className="mt-3 space-y-3">
+                  {Object.entries(groupedReferences).map(([documentId, refs], idx) => {
+                    const filename = getFilename(documentId);
+                    const headerToStrip = extractHeaderToStrip(
+                      refs.map((r) => r.snippet || "").filter(Boolean)
+                    );
+
+                    return (
+                      <div
+                        key={`${documentId}-${idx}`}
+                        className="bg-slate-900/35 rounded-md border border-slate-700/40 overflow-hidden"
+                      >
+                        <div className="p-2 flex items-center justify-between gap-2 border-b border-slate-700/30">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-4 h-4 rounded bg-red-500/10 flex items-center justify-center flex-shrink-0">
                               <svg className="w-2.5 h-2.5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+                                <path
+                                  fillRule="evenodd"
+                                  d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
+                                  clipRule="evenodd"
+                                />
                               </svg>
                             </div>
-                            <p className="text-xs font-medium text-slate-200 truncate max-w-[120px]" title={filename}>
+                            <p className="text-xs font-medium text-slate-200 truncate" title={filename}>
                               {filename}
                             </p>
                           </div>
-                          <div className="flex items-center gap-1 flex-wrap">
-                            <span className="text-xs text-slate-500">•</span>
-                            {pages.map((page, pageIdx) => (
-                              <button
-                                key={`${documentId}-page-${page}-${pageIdx}`}
-                                onClick={() => onViewReference?.(documentId, page)}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 hover:border-indigo-500/40 transition-all group"
-                                title={`Open reference page ${page}`}
+                        </div>
+
+                        <div className="p-2 space-y-2">
+                          {refs.map((ref, refIdx) => {
+                            const refKey = `${documentId}-ref-${ref.pageNumber}-${refIdx}`;
+                            const isExpanded = expandedRefKey === refKey;
+
+                            const displaySnippet = cleanEvidenceSnippet(ref.snippet, headerToStrip);
+                            const displaySnippetHover = cleanEvidenceSnippet(
+                              ref.snippetHover || ref.snippet,
+                              headerToStrip
+                            );
+
+                            return (
+                              <div
+                                key={refKey}
+                                className="rounded-md border border-slate-700/50 bg-slate-900/25 transition-all"
                               >
-                                <span className="text-xs font-medium text-indigo-300 group-hover:text-indigo-200">
-                                  {page}
-                                </span>
-                                <svg className="w-2.5 h-2.5 text-indigo-400 group-hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                </svg>
-                              </button>
-                            ))}
-                          </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedRefKey((prev) =>
+                                      prev === refKey ? null : refKey
+                                    )
+                                  }
+                                  className="w-full text-left p-2 flex items-start justify-between gap-3 hover:border-indigo-500/30 transition-colors"
+                                  aria-expanded={isExpanded}
+                                >
+                                  <div className="min-w-0 pr-1">
+                                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                                      <span className="text-[0.68rem] uppercase font-semibold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded">
+                                        Page {ref.pageNumber}
+                                      </span>
+                                    </div>
+
+                                    {isExpanded && displaySnippet && (
+                                      <div
+                                        className="text-[0.78rem] text-slate-300 leading-snug overflow-hidden"
+                                        style={{
+                                          display: "-webkit-box",
+                                          WebkitLineClamp: 3,
+                                          WebkitBoxOrient: "vertical",
+                                        }}
+                                        title={displaySnippet}
+                                      >
+                                        &ldquo;{displaySnippet}&rdquo;
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <svg
+                                    className={`w-4 h-4 text-slate-400 transition-transform ${isExpanded ? "rotate-180" : "rotate-0"}`}
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                    aria-hidden="true"
+                                  >
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 18l6-6-6-6" />
+                                  </svg>
+                                </button>
+
+                                {isExpanded && (
+                                  <div className="px-2 pb-2">
+                                    {displaySnippetHover &&
+                                      displaySnippetHover !== displaySnippet && (
+                                        <div
+                                          className="text-[0.74rem] text-slate-400 leading-snug overflow-hidden mb-2"
+                                          style={{
+                                            display: "-webkit-box",
+                                            WebkitLineClamp: 2,
+                                            WebkitBoxOrient: "vertical",
+                                          }}
+                                          title={displaySnippetHover}
+                                        >
+                                          {displaySnippetHover}
+                                        </div>
+                                      )}
+
+                                    <div className="flex justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() => onViewReference?.(documentId, ref.pageNumber)}
+                                        className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/20 hover:border-indigo-500/40 text-xs text-indigo-200 transition-colors"
+                                        title={`Open ${filename} (page ${ref.pageNumber})`}
+                                      >
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.5 12h3m13 0h3M12 2.5v3m0 13v3" />
+                                        </svg>
+                                        Open in PDF
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>

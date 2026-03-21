@@ -21,8 +21,8 @@ type Props = {
   hasDocuments?: boolean;
   uploadingFiles?: UploadingFile[];
   onAttachedDocsChange?: (docs: UploadedDocument[]) => void;
-  /** When this key changes, clear all per-chat attachments */
   resetAttachmentsKey?: number;
+  inputRef?: React.RefObject<HTMLTextAreaElement>;
 };
 
 export const ChatInput: React.FC<Props> = ({
@@ -36,16 +36,16 @@ export const ChatInput: React.FC<Props> = ({
   uploadingFiles = [],
   onAttachedDocsChange,
   resetAttachmentsKey,
+  inputRef: externalRef,
 }) => {
   const [value, setValue] = React.useState("");
   const [attachedDocIds, setAttachedDocIds] = React.useState<string[]>([]);
   const [hasUserRemovedDocs, setHasUserRemovedDocs] = React.useState(false);
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const internalRef = React.useRef<HTMLTextAreaElement>(null);
+  const textareaRef = externalRef || internalRef;
   const prevUploadedDocsRef = React.useRef<Set<string>>(new Set());
-  const isFirstDocsEffectRef = React.useRef(true);
 
-  // Clear current attachments when the parent explicitly requests a reset
-  // (used for "New Chat" and when switching between saved sessions).
+  // Clear attachments when resetAttachmentsKey changes (new chat/session)
   React.useEffect(() => {
     if (resetAttachmentsKey === undefined) return;
     console.log("♻️ Resetting ChatInput attachments due to new chat/session", {
@@ -53,17 +53,12 @@ export const ChatInput: React.FC<Props> = ({
     });
     setAttachedDocIds([]);
     setHasUserRemovedDocs(false);
-    // Snapshot the documents that exist *at the moment of reset* so they
-    // are treated as historical for this chat. Future uploads (with new
-    // document IDs) will then be detected as new and auto-attached.
     prevUploadedDocsRef.current = new Set(
       (uploadedDocs ?? []).map((d) => d.documentId)
     );
   }, [resetAttachmentsKey]);
 
-  // Auto-attach only newly uploaded documents. Documents that already
-  // exist when the app first loads (or after a hard refresh) are treated
-  // as history and are not auto-attached to the input.
+  // Auto-attach newly uploaded documents
   React.useEffect(() => {
     console.log("📋 ChatInput docs effect", {
       uploadedDocsCount: uploadedDocs.length,
@@ -71,23 +66,6 @@ export const ChatInput: React.FC<Props> = ({
       hasUserRemovedDocs,
       currentAttachedCount: attachedDocIds.length,
     });
-
-    // First meaningful run: wait until we actually have documents.
-    // When docs arrive for the first time (e.g. after reload + API
-    // fetch), treat ALL of them as historical and do NOT auto-attach.
-    if (isFirstDocsEffectRef.current) {
-      if (uploadedDocs.length === 0) {
-        // Still no documents; keep waiting.
-        prevUploadedDocsRef.current = new Set();
-        return;
-      }
-
-      prevUploadedDocsRef.current = new Set(
-        uploadedDocs.map((d) => d.documentId)
-      );
-      isFirstDocsEffectRef.current = false;
-      return;
-    }
 
     if (uploadedDocs.length === 0) {
       console.log("🧹 No documents, clearing ChatInput attachment state");
@@ -112,7 +90,6 @@ export const ChatInput: React.FC<Props> = ({
 
     if (newDocIds.length > 0 && !hasUserRemovedDocs) {
       console.log("✅ Auto-attaching newly uploaded documents:", newDocIds);
-      // Auto-attach only the newly uploaded documents
       setAttachedDocIds((prev) => {
         const updated = [...prev, ...newDocIds];
         console.log("📌 ChatInput attachedDocIds updated:", updated);
@@ -146,7 +123,7 @@ export const ChatInput: React.FC<Props> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed || disabled || !hasDocuments) return;
+    if (!trimmed || disabled) return;
     const docsToAttach = uploadedDocs.filter((d) =>
       attachedDocIds.includes(d.documentId)
     );
@@ -291,19 +268,19 @@ export const ChatInput: React.FC<Props> = ({
                 placeholder={
                   hasDocuments
                     ? "Message PDF Chatbot..."
-                    : "Upload a PDF to start chatting..."
+                    : "Ask me anything. Upload a PDF if you want document-grounded answers."
                 }
                 value={value}
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
-                disabled={disabled || !hasDocuments}
+                disabled={disabled}
                 rows={1}
               />
             </div>
 
             <button
               type="submit"
-              disabled={disabled || !value.trim() || !hasDocuments}
+              disabled={disabled || !value.trim()}
               className="send-btn flex-shrink-0 p-3 rounded-xl disabled:cursor-not-allowed"
               aria-label="Send message"
             >
@@ -320,12 +297,6 @@ export const ChatInput: React.FC<Props> = ({
             </button>
           </div>
         </div>
-
-        {!hasDocuments && uploadingFiles.length === 0 && (
-          <p className="mt-2 text-xs text-center text-amber-400/80">
-            Click the paperclip or upload in the sidebar to add a PDF
-          </p>
-        )}
       </form>
     </div>
   );

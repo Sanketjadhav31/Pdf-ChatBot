@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.v1 import chat_router, document_upload_router
 from api.v1.auth import router as auth_router
-from database import init_db
+from database import ensure_embedding_index_metadata, init_db
+from services.embedding_service import embedding_service
 
 
 def create_app() -> FastAPI:
@@ -27,6 +28,10 @@ def create_app() -> FastAPI:
 
     # Initialize database tables
     init_db()
+    ensure_embedding_index_metadata(
+        embedding_model_name=embedding_service.model_name,
+        embedding_dimension=embedding_service.dimension,
+    )
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(document_upload_router, prefix="/api/v1")

@@ -556,10 +556,15 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  pointer-events: auto;
 }
-.input-container:focus-within {
+.input-container:focus-within,
+.input-container.input-focused {
   border-color: rgba(99, 102, 241, 0.4);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08), 0 4px 20px rgba(0,0,0,0.4);
+}
+.input-container textarea {
+  pointer-events: auto;
 }
 
 .input-container textarea {

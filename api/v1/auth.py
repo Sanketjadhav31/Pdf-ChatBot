@@ -1,4 +1,5 @@
 from datetime import timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
@@ -17,12 +18,19 @@ from models.schemas import TokenResponse, UserOut
 class AuthRequest(BaseModel):
     email: EmailStr
     password: str
+    username: Optional[str] = None
 
 router = APIRouter(tags=["auth"])
 
 
 @router.post("/auth/register", response_model=TokenResponse)
 def register(request: AuthRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    if not request.username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username is required",
+        )
+    
     existing = db.query(User).filter(User.email == request.email.lower()).first()
     if existing:
         raise HTTPException(
@@ -32,6 +40,7 @@ def register(request: AuthRequest, db: Session = Depends(get_db)) -> TokenRespon
 
     user = User(
         email=request.email.lower(),
+        username=request.username,
         hashed_password=get_password_hash(request.password),
     )
     db.add(user)
@@ -42,7 +51,7 @@ def register(request: AuthRequest, db: Session = Depends(get_db)) -> TokenRespon
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user=UserOut(id=user.id, email=user.email),
+        user=UserOut(id=user.id, email=user.email, username=user.username),
     )
 
 
@@ -59,11 +68,11 @@ def login(request: AuthRequest, db: Session = Depends(get_db)) -> TokenResponse:
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user=UserOut(id=user.id, email=user.email),
+        user=UserOut(id=user.id, email=user.email, username=user.username),
     )
 
 
 @router.get("/auth/me", response_model=UserOut)
 def me(current_user: User = Depends(get_current_user)) -> UserOut:
-    return UserOut(id=current_user.id, email=current_user.email)
+    return UserOut(id=current_user.id, email=current_user.email, username=current_user.username)
 

@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
@@ -148,9 +147,12 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
 ):
     """
-    List uploaded PDFs for the current user from the last 1 day.
+    List uploaded PDFs for the current user.
+    Kept in sync with chat-session recency so reopening old sessions
+    can restore their "active PDF" state.
     """
-    cutoff = datetime.utcnow() - timedelta(days=1)
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
     docs = (
         db.query(UploadedDocument)
         .filter(

@@ -56,13 +56,77 @@ const App: React.FC = () => {
   const [viewMode, setViewMode] = React.useState<"chat" | "uploads">("chat");
   const [attachmentResetKey, setAttachmentResetKey] = React.useState(0);
   const [authToken, setAuthToken] = React.useState<string | null>(() => localStorage.getItem("pdfchat_token"));
-  const [currentUserEmail, setCurrentUserEmail] = React.useState<string | null>(() => localStorage.getItem("pdfchat_email"));
+  const [currentUserEmail, setCurrentUserEmail] = React.useState<string | null>(null);
+  const [currentUsername, setCurrentUsername] = React.useState<string | null>(null);
   const [theme, setTheme] = React.useState<"dark" | "light">(
     () => (localStorage.getItem("pdfchat_theme") as "dark" | "light") || "dark"
   );
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const uploadTriggerRef = React.useRef<(() => void) | null>(null);
   const isLoadingRef = React.useRef(false);
+  const chatInputRef = React.useRef<HTMLTextAreaElement>(null);
+
+  // Auto-focus chat input when user starts typing anywhere
+  React.useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Don't interfere if:
+      // - User is holding modifier keys (Ctrl, Cmd, Alt)
+      // - User is already typing in an input/textarea
+      // - Chat is sending a message
+      // - Not authenticated
+      // - Viewing a PDF
+      if (
+        e.ctrlKey ||
+        e.metaKey ||
+        e.altKey ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        isSending ||
+        !authToken ||
+        viewingDoc
+      ) {
+        return;
+      }
+
+      // Focus the chat input if user types a printable character
+      if (e.key.length === 1 && chatInputRef.current) {
+        chatInputRef.current.focus();
+        // Append to existing value instead of replacing
+        const currentValue = chatInputRef.current.value;
+        chatInputRef.current.value = currentValue + e.key;
+        // Trigger React's onChange by dispatching input event
+        const inputEvent = new Event('input', { bubbles: true });
+        chatInputRef.current.dispatchEvent(inputEvent);
+        // Prevent the default to avoid double typing
+        e.preventDefault();
+      }
+    };
+
+    document.addEventListener('keydown', handleGlobalKeyDown, true);
+    return () => document.removeEventListener('keydown', handleGlobalKeyDown, true);
+  }, [isSending, authToken, viewingDoc]);
+
+  const refreshChatSessions = React.useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const sessionsRes = await fetch(`${API_BASE}/chat/sessions`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!sessionsRes.ok) return;
+      const sessionsData = await sessionsRes.json();
+      setChatSessions(
+        sessionsData.map((s: any) => ({
+          id: s.id,
+          title: s.title || "New chat",
+          timestamp: new Date(s.updated_at || s.created_at),
+          messages: [],
+          sessionId: s.id,
+        }))
+      );
+    } catch (e) {
+      console.error("Failed to refresh chat sessions:", e);
+    }
+  }, [authToken]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -128,6 +192,21 @@ const App: React.FC = () => {
       }
     };
     loadInitial();
+  }, [authToken]);
+
+  React.useEffect(() => {
+    if (!authToken) return;
+    fetch(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) {
+          setCurrentUsername(data.username);
+          setCurrentUserEmail(data.email);
+        }
+      })
+      .catch(e => console.error("Failed to fetch user info:", e));
   }, [authToken]);
 
   const handleUploadStart = (filename: string) => {
@@ -216,6 +295,16 @@ const App: React.FC = () => {
         content: m.content,
       }));
       setMessages(loadedMessages);
+
+      // Restore "active PDFs" for this chat session so the next /chat call
+      // can build RAG context even after refresh.
+      const sessionDocs: AttachedDoc[] = (data.documents ?? []).map((d: any) => ({
+        documentId: d.document_id,
+        filename: d.filename,
+      }));
+      setLastAttachedDocs(sessionDocs.length > 0 ? sessionDocs : null);
+      // Keep ChatInput chips empty; we only need lastAttachedDocs for backend context.
+
       // When switching to another saved chat, clear the current
       // ChatInput attachments so each session starts clean.
       setAttachmentResetKey((k) => k + 1);
@@ -286,7 +375,7 @@ const App: React.FC = () => {
     const docsToAttach: AttachedDoc[] =
       attachedDocs ??
       lastAttachedDocs ??
-      uploadedDocs.map((d) => ({ documentId: d.documentId, filename: d.filename }));
+      [];
 
     // Remember the documents used for this conversation so that
     // follow‑up questions without explicit attachments keep using
@@ -305,19 +394,28 @@ const App: React.FC = () => {
 
     setIsSending(true);
     try {
+      const payload: any = {
+        session_id: sessionId,
+        question,
+      };
+      if (docsToAttach.length > 0) {
+        payload.document_ids = docsToAttach.map((d) => d.documentId);
+      }
+
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
-        body: JSON.stringify({ session_id: sessionId, question }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) throw new Error("Chat request failed");
 
       const data = await res.json();
       setSessionId(data.session_id);
+      setCurrentSessionId(data.session_id);
 
       setMessages((prev) => [
         ...prev,
@@ -330,9 +428,14 @@ const App: React.FC = () => {
             pageNumber: ref.page_number,
             documentHeading: ref.document_heading,
             paragraphHeading: ref.paragraph_heading,
+            snippet: ref.snippet,
+            snippetHover: ref.snippet_hover,
           })),
         },
       ]);
+
+      // Ensure the sidebar shows the newly created/updated session immediately.
+      await refreshChatSessions();
     } catch (error) {
       console.error(error);
       setMessages((prev) => [
@@ -360,11 +463,11 @@ const App: React.FC = () => {
         <div className="w-full max-w-md rounded-2xl bg-[var(--bg-input)] p-6 border border-white/10 shadow-xl space-y-4">
           <h1 className="text-xl font-semibold text-slate-50 text-center">Sign in to PDF Chatbot</h1>
           <AuthForm
-            onAuthenticated={(token: string, email: string) => {
+            onAuthenticated={(token: string, email: string, username?: string) => {
               setAuthToken(token);
               setCurrentUserEmail(email);
+              setCurrentUsername(username || null);
               localStorage.setItem("pdfchat_token", token);
-              localStorage.setItem("pdfchat_email", email);
             }}
           />
         </div>
@@ -397,11 +500,12 @@ const App: React.FC = () => {
         onViewModeChange={setViewMode}
         onDeleteSession={handleDeleteSession}
         currentUserEmail={currentUserEmail}
+        currentUsername={currentUsername}
         onLogout={() => {
           localStorage.removeItem("pdfchat_token");
-          localStorage.removeItem("pdfchat_email");
           setAuthToken(null);
           setCurrentUserEmail(null);
+          setCurrentUsername(null);
           setMessages([]);
           setUploadedDocs([]);
           setChatSessions([]);
@@ -465,9 +569,11 @@ const App: React.FC = () => {
                     </svg>
                   </div>
                   <div>
-                    <h2 className="text-2xl font-semibold text-slate-100 mb-2">Welcome to PDF Chatbot</h2>
+                    <h2 className="text-2xl font-semibold text-slate-100 mb-2">
+                      Hello {currentUsername ? currentUsername.trim().split(/\s+/)[0] : "there"}! 👋
+                    </h2>
                     <p className="text-slate-400 max-w-md">
-                      Upload your PDF documents and start asking questions. I'll provide answers with precise references to pages and sections.
+                      I'm your PDF Assistant. Upload a document and ask me anything about it. I can also respond to quick greetings and thanks.
                     </p>
                   </div>
                   
@@ -606,10 +712,8 @@ const App: React.FC = () => {
                 hasDocuments={uploadedDocs.length > 0}
                 uploadingFiles={uploadingFilesList}
                 onAttachedDocsChange={setCurrentlyAttachedDocs}
-                // Changing this key tells ChatInput to clear its
-                // per-chat attachment state (used for "New Chat"
-                // and when switching between sessions).
                 resetAttachmentsKey={attachmentResetKey}
+                inputRef={chatInputRef}
               />
             </div>
           </div>

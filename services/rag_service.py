@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 import uuid
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from models.schemas import ChatRequest, ChatResponse, Chunk, Reference
+from models.schemas import ChatRequest, Chunk, Reference
 from services.embedding_service import embedding_service
 from services.llm_service import llm_service
 
@@ -120,6 +120,7 @@ class InMemoryVectorStore:
         query: str,
         top_k: int = 10,
         similarity_threshold: float = 0.1,
+        document_ids: Optional[Set[str]] = None,
     ) -> List[Tuple[Chunk, float]]:
         if not self._chunks:
             return []
@@ -141,10 +142,16 @@ class InMemoryVectorStore:
         results: List[Tuple[Chunk, float]] = []
         for idx in top_indices:
             score = float(cosine_sim[idx])
-            print(f"Debug: Chunk {idx} similarity score: {score:.4f} - Preview: {self._chunks[int(idx)].content[:100]}")
             if score < similarity_threshold:
                 continue
-            results.append((self._chunks[int(idx)], score))
+            chunk = self._chunks[int(idx)]
+            if document_ids is not None and chunk.metadata.document_id not in document_ids:
+                continue
+            print(
+                f"Debug: Chunk {idx} similarity score: {score:.4f} - "
+                f"Preview: {chunk.content[:100]}"
+            )
+            results.append((chunk, score))
 
         print(f"Debug: Query '{query}' returned {len(results)} results (threshold={similarity_threshold}) out of {len(self._chunks)} chunks")
         return results
@@ -155,35 +162,45 @@ class ChatOrchestrator:
         self._store = store
         self._sessions: Dict[str, List[str]] = {}
 
-    def handle_chat(self, request: ChatRequest) -> ChatResponse:
+    def handle_chat(self, request: ChatRequest) -> dict:
         session_id = request.session_id or str(uuid.uuid4())
-        history = self._sessions.setdefault(session_id, [])
-        history.append(request.question)
+        # Note: conversation history is persisted in the DB layer (api/v1/chat.py).
+        # This orchestrator only builds PDF context from the vector store.
 
         query_lower = request.question.lower().strip()
 
-        # If we have no chunks loaded at all, it's usually because the
-        # server has just restarted (the in‑memory store is empty while
-        # the UI may still show uploaded PDFs). Surface a clear message
-        # instead of saying the question is "not related".
+        # Important: if `document_ids` is provided but empty, treat it as
+        # "no PDF context for this message" (even if the server has other PDFs).
+        allowed_document_ids = None
+        if request.document_ids is not None:
+            allowed_document_ids = set(request.document_ids)
+
+        # If the client explicitly provided an empty document_ids array,
+        # it means: "no PDFs are active for this message".
+        if allowed_document_ids is not None and len(allowed_document_ids) == 0:
+            return {"context": "", "references": [], "session_id": session_id}
+
         if self._store.size == 0:
-            return ChatResponse(
-                answer=(
-                    "I don't have any documents loaded right now. "
-                    "Please upload a PDF again so I can answer questions about it."
-                ),
-                references=[],
-                session_id=session_id,
-            )
+            return {"context": "", "references": [], "session_id": session_id}
 
         # Try with a lower threshold first (0.2 instead of 0.3)
         # This helps with short queries and specific names.
-        results = self._store.search(request.question, similarity_threshold=0.2, top_k=10)
+        results = self._store.search(
+            request.question,
+            similarity_threshold=0.2,
+            top_k=10,
+            document_ids=allowed_document_ids,
+        )
 
         if not results:
             # If no results, try with even lower threshold.
             print(f"Debug: No results with threshold 0.2, trying with 0.0")
-            results = self._store.search(request.question, similarity_threshold=0.0, top_k=10)
+            results = self._store.search(
+                request.question,
+                similarity_threshold=0.0,
+                top_k=10,
+                document_ids=allowed_document_ids,
+            )
 
             if not results:
                 # As a final fallback, treat generic prompts like
@@ -203,19 +220,12 @@ class ChatOrchestrator:
                     # Use the first few chunks as context for a high‑level
                     # summary answer.
                     print("Debug: No semantic hits, using first chunks for summary request.")
-                    results = [
-                        (chunk, 1.0)
-                        for chunk in getattr(self._store, "_chunks", [])[:10]
-                    ]
-                else:
-                    return ChatResponse(
-                        answer=(
-                            "This question is not related to the uploaded documents. "
-                            "Please ask a question based on the document content."
-                        ),
-                        references=[],
-                        session_id=session_id,
-                    )
+                    base_chunks = list(getattr(self._store, "_chunks", []))
+                    if allowed_document_ids is not None:
+                        base_chunks = [
+                            c for c in base_chunks if c.metadata.document_id in allowed_document_ids
+                        ]
+                    results = [(chunk, 1.0) for chunk in base_chunks[:10]]
 
         # Build context from top results with page numbers
         context_parts = []
@@ -229,6 +239,30 @@ class ChatOrchestrator:
         # For now, we'll handle this in the chat endpoint
         references: List[Reference] = []
         added_keys = set()
+
+        def make_sentence_snippet(text: str, min_len: int = 80, max_len: int = 180) -> str:
+            """
+            Level 1 snippet: take a complete first sentence when possible.
+            - Aim for at least `min_len` characters before the first sentence boundary.
+            - Hard cap at `max_len` if no boundary is found.
+            """
+            t = (text or "").strip()
+            if not t:
+                return ""
+            if len(t) <= max_len:
+                return t
+
+            # Prefer first period after min_len, otherwise fallback to max_len.
+            boundary_idx = t.find(".", min_len)
+            if boundary_idx != -1:
+                return t[: boundary_idx + 1]
+
+            # Fallback: first newline or fallback to max_len.
+            nl_idx = t.find("\n", min_len)
+            if nl_idx != -1:
+                return t[:nl_idx].rstrip()
+
+            return t[:max_len].rstrip() + "…"
 
         # Only include top chunks as references
         # Filter by similarity threshold of 0.5 (50% similarity)
@@ -258,6 +292,8 @@ class ChatOrchestrator:
                     page_number=chunk.metadata.page_number,
                     document_heading=chunk.metadata.document_heading,
                     paragraph_heading=chunk.metadata.paragraph_heading,
+                    snippet=make_sentence_snippet(chunk.content, min_len=80, max_len=180),
+                    snippet_hover=make_sentence_snippet(chunk.content, min_len=80, max_len=400),
                 )
             )
         

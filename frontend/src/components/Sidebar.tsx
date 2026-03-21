@@ -21,6 +21,7 @@ type Props = {
   onViewModeChange?: (mode: "chat" | "uploads") => void;
   onDeleteSession?: (id: string) => void;
   currentUserEmail?: string | null;
+  currentUsername?: string | null;
   onLogout?: () => void;
 };
 
@@ -39,6 +40,7 @@ export const Sidebar: React.FC<Props> = ({
   onViewModeChange,
   onDeleteSession,
   currentUserEmail,
+  currentUsername,
   onLogout,
 }) => {
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -260,14 +262,19 @@ export const Sidebar: React.FC<Props> = ({
 
       <div className="p-3 border-t border-slate-800">
         <div className="text-xs text-slate-500 space-y-2">
-          {currentUserEmail && (
+          {(currentUsername || currentUserEmail) && (
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 12a4 4 0 10-8 0 4 4 0 008 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-                <span className="truncate">{currentUserEmail}</span>
+              <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 12a4 4 0 10-8 0 4 4 0 008 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                  <span className="truncate font-medium text-slate-300">{currentUsername || "User"}</span>
+                </div>
+                {currentUserEmail && (
+                  <span className="truncate text-slate-500 text-[10px] ml-5">{currentUserEmail}</span>
+                )}
               </div>
               {onLogout && (
                 <button
