@@ -3,7 +3,7 @@
 ## What I Fixed
 
 1. ✅ Removed all hardcoded `localhost:5000` URLs
-2. ✅ Set production backend URL: `https://pdf-chatbot-backend.onrender.com/api/v1`
+2. ✅ Set production backend URL: `https://pdf-chatbot-kktm.onrender.com/api/v1`
 3. ✅ Set production frontend URL: `https://pdfchatbot1.netlify.app`
 4. ✅ Updated CORS to allow your Netlify domain
 5. ✅ Created environment-specific config files
@@ -74,7 +74,7 @@ No manual setup needed - configured in `netlify.toml`
 ## Current Configuration
 
 - **Frontend**: https://pdfchatbot1.netlify.app
-- **Backend**: https://pdf-chatbot-backend.onrender.com
+- **Backend**: https://pdf-chatbot-kktm.onrender.com
 - **Local Dev Backend**: http://localhost:5000/api/v1
 - **Local Dev Frontend**: http://localhost:5173
 
@@ -93,4 +93,4 @@ No manual setup needed - configured in `netlify.toml`
 ### "Failed to fetch"?
 - Backend might be sleeping (Render free tier)
 - Wait 30 seconds for it to wake up
-- Check backend health: https://pdf-chatbot-backend.onrender.com/docs
+- Check backend health: https://pdf-chatbot-kktm.onrender.com/docs

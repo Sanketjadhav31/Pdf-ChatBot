@@ -3,7 +3,7 @@
 
 import requests
 
-BACKEND_URL = "https://pdf-chatbot-backend.onrender.com"
+BACKEND_URL = "https://pdf-chatbot-kktm.onrender.com"
 
 print("🔍 Checking backend status...\n")
 
