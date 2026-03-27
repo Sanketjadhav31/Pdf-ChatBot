@@ -5,14 +5,54 @@ type Props = {
   filename: string;
   initialPage?: number;
   onClose: () => void;
+  authToken?: string;
 };
 
-export const PdfViewer: React.FC<Props> = ({ documentId, filename, initialPage, onClose }) => {
+export const PdfViewer: React.FC<Props> = ({ documentId, filename, initialPage, onClose, authToken }) => {
   const [isLoading, setIsLoading] = React.useState(true);
-  
-  const pdfUrl = initialPage 
-    ? `http://localhost:5000/api/v1/documents/${documentId}/view#page=${initialPage}&toolbar=1&navpanes=1&scrollbar=1`
-    : `http://localhost:5000/api/v1/documents/${documentId}/view#toolbar=1&navpanes=1&scrollbar=1`;
+  const [pdfUrl, setPdfUrl] = React.useState<string>("");
+  const [error, setError] = React.useState<string>("");
+
+  React.useEffect(() => {
+    const fetchPdf = async () => {
+      try {
+        setIsLoading(true);
+        setError("");
+        
+        const response = await fetch(`http://localhost:5000/api/v1/documents/${documentId}/view`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to load PDF: ${response.statusText}`);
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        
+        // Add page parameter if specified
+        const urlWithPage = initialPage 
+          ? `${url}#page=${initialPage}&toolbar=1&navpanes=1&scrollbar=1`
+          : `${url}#toolbar=1&navpanes=1&scrollbar=1`;
+        
+        setPdfUrl(urlWithPage);
+      } catch (err) {
+        console.error("Error loading PDF:", err);
+        setError(err instanceof Error ? err.message : "Failed to load PDF");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchPdf();
+
+    // Cleanup blob URL when component unmounts
+    return () => {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+      }
+    };
+  }, [documentId, initialPage, authToken]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -52,12 +92,29 @@ export const PdfViewer: React.FC<Props> = ({ documentId, filename, initialPage, 
               </div>
             </div>
           )}
-          <iframe
-            src={pdfUrl}
-            className="w-full h-full"
-            title={filename}
-            onLoad={() => setIsLoading(false)}
-          />
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
+              <div className="flex flex-col items-center gap-3 text-center px-4">
+                <svg className="w-12 h-12 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-sm text-red-400">{error}</p>
+                <button
+                  onClick={onClose}
+                  className="mt-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-200 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          )}
+          {pdfUrl && !error && (
+            <iframe
+              src={pdfUrl}
+              className="w-full h-full"
+              title={filename}
+            />
+          )}
         </div>
       </div>
     </div>

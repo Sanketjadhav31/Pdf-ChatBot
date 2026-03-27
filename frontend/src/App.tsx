@@ -46,6 +46,7 @@ const App: React.FC = () => {
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [isSending, setIsSending] = React.useState(false);
   const [uploadedDocs, setUploadedDocs] = React.useState<UploadedDocument[]>([]);
+  const [chatDocs, setChatDocs] = React.useState<UploadedDocument[]>([]);
   const [lastAttachedDocs, setLastAttachedDocs] = React.useState<AttachedDoc[] | null>(null);
   const [currentlyAttachedDocs, setCurrentlyAttachedDocs] = React.useState<UploadedDocument[]>([]);
   const [sidebarOpen, setSidebarOpen] = React.useState(true);
@@ -69,6 +70,13 @@ const App: React.FC = () => {
   // Auto-focus chat input when user starts typing anywhere
   React.useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+U to trigger upload
+      if ((e.ctrlKey || e.metaKey) && e.key === 'u') {
+        e.preventDefault();
+        uploadTriggerRef.current?.();
+        return;
+      }
+
       // Don't interfere if:
       // - User is holding modifier keys (Ctrl, Cmd, Alt)
       // - User is already typing in an input/textarea
@@ -170,20 +178,12 @@ const App: React.FC = () => {
         }
         if (docsRes.ok) {
           const docsData = await docsRes.json();
-          // Deduplicate documents by filename, keeping the most recent entry.
-          const byFilename = new Map<string, { id: string; filename: string; created_at: string }>();
-          for (const d of docsData) {
-            const existing = byFilename.get(d.filename);
-            if (!existing || new Date(d.created_at) > new Date(existing.created_at)) {
-              byFilename.set(d.filename, { id: d.id, filename: d.filename, created_at: d.created_at });
-            }
-          }
-          const uniqueDocs: UploadedDocument[] = Array.from(byFilename.values()).map((d) => ({
+          const allDocs: UploadedDocument[] = docsData.map((d: any) => ({
             documentId: d.id,
             filename: d.filename,
             uploadedAt: new Date(d.created_at),
           }));
-          setUploadedDocs(uniqueDocs);
+          setUploadedDocs(allDocs);
         }
       } catch (e) {
         console.error(e);
@@ -254,13 +254,21 @@ const App: React.FC = () => {
       console.log(`📝 Adding document to state:`, newDoc);
       console.log(`📚 Previous docs count: ${prev.length}`);
 
-      // Deduplicate by filename: if a document with the same filename
-      // already exists, replace it with the newest upload instead of
-      // showing it multiple times.
-      const withoutSameName = prev.filter((doc) => doc.filename !== info.filename);
-      const newDocs = [...withoutSameName, newDoc];
+      // Keep every upload as a separate document (dedupe only by id).
+      const withoutSameId = prev.filter((doc) => doc.documentId !== info.documentId);
+      const newDocs = [...withoutSameId, newDoc];
       console.log(`📚 New docs count: ${newDocs.length}`);
       return newDocs;
+    });
+    // Keep a chat-scoped doc list so each chat only shows its own PDFs.
+    setChatDocs((prev) => {
+      const newDoc: UploadedDocument = {
+        documentId: info.documentId,
+        filename: info.filename,
+        uploadedAt: new Date(),
+      };
+      const withoutSameId = prev.filter((doc) => doc.documentId !== info.documentId);
+      return [...withoutSameId, newDoc];
     });
   };
 
@@ -268,6 +276,8 @@ const App: React.FC = () => {
     setMessages([]);
     setSessionId(null);
     setCurrentSessionId(null);
+    setChatDocs([]);
+    setCurrentlyAttachedDocs([]);
     // Clear any remembered document attachments so the new chat
     // does not implicitly reuse PDFs from previous conversations.
     setLastAttachedDocs(null);
@@ -279,6 +289,10 @@ const App: React.FC = () => {
 
   const handleSelectSession = async (id: string) => {
     if (!authToken) return;
+    // Align session id immediately so /chat never uses a stale id or null while
+    // history is still loading (avoids creating a new session or wrong-thread messages).
+    setCurrentSessionId(id);
+    setSessionId(id);
     try {
       const res = await fetch(`${API_BASE}/chat/sessions/${id}`, {
         headers: {
@@ -287,12 +301,15 @@ const App: React.FC = () => {
       });
       if (!res.ok) throw new Error("Failed to load chat session");
       const data = await res.json();
-      setCurrentSessionId(id);
       setSessionId(data.session_id);
       const loadedMessages: Message[] = data.messages.map((m: any) => ({
         id: `${m.id}`,
         role: m.role,
         content: m.content,
+        attachedDocs: (m.attached_docs ?? []).map((d: any) => ({
+          documentId: d.document_id,
+          filename: d.filename,
+        })),
       }));
       setMessages(loadedMessages);
 
@@ -303,6 +320,20 @@ const App: React.FC = () => {
         filename: d.filename,
       }));
       setLastAttachedDocs(sessionDocs.length > 0 ? sessionDocs : null);
+      setChatDocs(
+        sessionDocs.map((d: AttachedDoc) => ({
+          documentId: d.documentId,
+          filename: d.filename,
+          uploadedAt: new Date(),
+        }))
+      );
+      setCurrentlyAttachedDocs(
+        sessionDocs.map((d: AttachedDoc) => ({
+          documentId: d.documentId,
+          filename: d.filename,
+          uploadedAt: new Date(),
+        }))
+      );
       // Keep ChatInput chips empty; we only need lastAttachedDocs for backend context.
 
       // When switching to another saved chat, clear the current
@@ -346,6 +377,11 @@ const App: React.FC = () => {
       
       // Remove from frontend state
       setUploadedDocs((prev) => prev.filter((doc) => doc.documentId !== documentId));
+      setChatDocs((prev) => prev.filter((doc) => doc.documentId !== documentId));
+      setCurrentlyAttachedDocs((prev) => prev.filter((doc) => doc.documentId !== documentId));
+      setLastAttachedDocs((prev) =>
+        prev ? prev.filter((doc) => doc.documentId !== documentId) : null
+      );
       
       // Close viewer if this document is being viewed
       if (viewingDoc?.documentId === documentId) {
@@ -372,34 +408,37 @@ const App: React.FC = () => {
 
 
   const handleSend = async (question: string, attachedDocs?: AttachedDoc[]) => {
-    const docsToAttach: AttachedDoc[] =
-      attachedDocs ??
-      lastAttachedDocs ??
-      [];
+    const explicitDocs: AttachedDoc[] = attachedDocs ?? [];
+    // For backend context: if this message has explicit attachments, use those.
+    // Otherwise fallback to last used docs for continuity.
+    const effectiveDocsForRequest: AttachedDoc[] =
+      explicitDocs.length > 0 ? explicitDocs : (lastAttachedDocs ?? []);
 
     // Remember the documents used for this conversation so that
     // follow‑up questions without explicit attachments keep using
     // the same PDF(s).
-    if (docsToAttach.length > 0) {
-      setLastAttachedDocs(docsToAttach);
+    if (effectiveDocsForRequest.length > 0) {
+      setLastAttachedDocs(effectiveDocsForRequest);
     }
 
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: "user",
       content: question,
-      attachedDocs: docsToAttach.length > 0 ? docsToAttach : undefined,
+      // UI should show chips only when user explicitly attached/uploaded docs
+      // on this specific message.
+      attachedDocs: explicitDocs.length > 0 ? explicitDocs : undefined,
     };
     setMessages((prev) => [...prev, userMessage]);
 
     setIsSending(true);
     try {
       const payload: any = {
-        session_id: sessionId,
+        session_id: sessionId ?? currentSessionId,
         question,
       };
-      if (docsToAttach.length > 0) {
-        payload.document_ids = docsToAttach.map((d) => d.documentId);
+      if (effectiveDocsForRequest.length > 0) {
+        payload.document_ids = effectiveDocsForRequest.map((d) => d.documentId);
       }
 
       const res = await fetch(`${API_BASE}/chat`, {
@@ -508,6 +547,7 @@ const App: React.FC = () => {
           setCurrentUsername(null);
           setMessages([]);
           setUploadedDocs([]);
+          setChatDocs([]);
           setChatSessions([]);
         }}
       />
@@ -518,6 +558,7 @@ const App: React.FC = () => {
           filename={viewingDoc.filename}
           initialPage={viewingDoc.initialPage}
           onClose={() => setViewingDoc(null)}
+          authToken={authToken || undefined}
         />
       )}
 
@@ -581,12 +622,18 @@ const App: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => uploadTriggerRef.current?.()}
-                      className="mt-4 inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-indigo-500 text-white font-medium hover:bg-indigo-600 cursor-pointer transition-colors shadow-lg"
+                      className="mt-4 inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-indigo-500 text-white font-medium hover:bg-indigo-600 cursor-pointer transition-all shadow-lg hover:shadow-xl hover:scale-105 active:scale-95 relative group"
+                      title="Upload PDF files to start chatting"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                       </svg>
                       <span>Upload PDF</span>
+                      {/* Tooltip */}
+                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-lg border border-slate-700 z-50">
+                        Click to upload PDF files (Ctrl+U)
+                        <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-slate-900"></span>
+                      </span>
                     </button>
                   )}
 
@@ -707,9 +754,9 @@ const App: React.FC = () => {
                 disabled={isSending}
                 isLoading={isSending}
                 onRequestUpload={() => uploadTriggerRef.current?.()}
-                uploadedDocs={uploadedDocs}
+                uploadedDocs={chatDocs}
                 onViewDoc={handleViewDoc}
-                hasDocuments={uploadedDocs.length > 0}
+                hasDocuments={chatDocs.length > 0}
                 uploadingFiles={uploadingFilesList}
                 onAttachedDocsChange={setCurrentlyAttachedDocs}
                 resetAttachmentsKey={attachmentResetKey}

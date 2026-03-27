@@ -199,13 +199,18 @@ export const ChatInput: React.FC<Props> = ({
             <button
               type="button"
               onClick={onRequestUpload}
-              className="flex-shrink-0 p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-slate-200 transition-colors"
-              aria-label="Upload PDF"
-              title="Upload PDF"
+              className="flex-shrink-0 p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-slate-200 transition-all hover:scale-110 active:scale-95 relative group"
+              aria-label="Upload PDF files"
+              title="Upload PDF files (Ctrl+U)"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
               </svg>
+              {/* Enhanced Tooltip */}
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-lg border border-slate-700 z-50">
+                Upload PDF files
+                <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-slate-900"></span>
+              </span>
             </button>
 
             {/* Document cards above textarea + full-width input below */}
@@ -273,16 +278,17 @@ export const ChatInput: React.FC<Props> = ({
                 value={value}
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
-                disabled={disabled}
+                disabled={false}
                 rows={1}
               />
             </div>
 
             <button
               type="submit"
-              disabled={disabled || !value.trim()}
-              className="send-btn flex-shrink-0 p-3 rounded-xl disabled:cursor-not-allowed"
+              disabled={disabled || !value.trim() || isLoading}
+              className="send-btn flex-shrink-0 p-3 rounded-xl disabled:cursor-not-allowed transition-all hover:scale-110 active:scale-95 relative group"
               aria-label="Send message"
+              title={disabled || !value.trim() || isLoading ? "Type a message to send" : "Send message (Enter)"}
             >
               {isLoading ? (
                 <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -293,6 +299,13 @@ export const ChatInput: React.FC<Props> = ({
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
+              )}
+              {/* Tooltip for send button */}
+              {!disabled && value.trim() && !isLoading && (
+                <span className="absolute bottom-full right-0 mb-2 px-3 py-1.5 bg-slate-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-lg border border-slate-700 z-50">
+                  Send message (Enter)
+                  <span className="absolute top-full right-4 -mt-1 border-4 border-transparent border-t-slate-900"></span>
+                </span>
               )}
             </button>
           </div>

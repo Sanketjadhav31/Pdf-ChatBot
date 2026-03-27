@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import uuid
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -9,6 +10,9 @@ import numpy as np
 from models.schemas import ChatRequest, Chunk, Reference
 from services.embedding_service import embedding_service
 from services.llm_service import llm_service
+from logger_config import setup_logger, PerformanceTimer, log_step
+
+logger = setup_logger(__name__)
 
 
 class InMemoryVectorStore:
@@ -29,22 +33,18 @@ class InMemoryVectorStore:
         texts = [chunk.content for chunk in chunks]
         
         # Batch embed all texts at once (much faster than one-by-one)
-        print(f"\n{'='*60}")
-        print(f"📊 EMBEDDING PROGRESS")
-        print(f"{'='*60}")
-        print(f"Total chunks to embed: {len(texts)}")
-        print(f"Starting batch embedding...")
+        logger.info(f"Starting batch embedding for {len(texts)} chunks")
         
-        embeddings = embedding_service.embed_texts(texts)
+        with PerformanceTimer(logger, f"Batch Embedding ({len(texts)} chunks)"):
+            embeddings = embedding_service.embed_texts(texts)
         
         # Add to store
         for chunk, embedding in zip(chunks, embeddings):
             self._chunks.append(chunk)
             self._embeddings.append(embedding)
         
-        print(f"✅ Successfully embedded {len(chunks)} chunks")
-        print(f"📚 Total chunks in vector store: {self.size}")
-        print(f"{'='*60}\n")
+        logger.info(f"Successfully embedded {len(chunks)} chunks")
+        logger.info(f"Total chunks in vector store: {self.size}")
 
     def delete_chunks_by_document(self, document_id: str) -> int:
         """Delete all chunks belonging to a specific document"""
@@ -61,8 +61,8 @@ class InMemoryVectorStore:
         self._chunks = [self._chunks[i] for i in indices_to_keep]
         self._embeddings = [self._embeddings[i] for i in indices_to_keep]
         
-        print(f"🗑️  Deleted {deleted_count} chunks for document {document_id}")
-        print(f"📚 Remaining chunks in vector store: {self.size}")
+        logger.info(f"Deleted {deleted_count} chunks for document {document_id}")
+        logger.info(f"Remaining chunks in vector store: {self.size}")
         
         return deleted_count
     def add_chunks(self, chunks: List[Chunk]) -> None:
@@ -125,35 +125,35 @@ class InMemoryVectorStore:
         if not self._chunks:
             return []
 
-        query_vec = self.embed_text(query)
-        mat = np.stack(self._embeddings, axis=0)
+        with PerformanceTimer(logger, f"Vector Search (query: '{query[:50]}...')"):
+            query_vec = self.embed_text(query)
+            mat = np.stack(self._embeddings, axis=0)
 
-        dot = mat @ query_vec
-        mat_norm = np.linalg.norm(mat, axis=1)
-        query_norm = float(np.linalg.norm(query_vec))
+            dot = mat @ query_vec
+            mat_norm = np.linalg.norm(mat, axis=1)
+            query_norm = float(np.linalg.norm(query_vec))
 
-        # Avoid division by zero
-        denom = mat_norm * query_norm + 1e-8
-        cosine_sim = dot / denom
+            # Avoid division by zero
+            denom = mat_norm * query_norm + 1e-8
+            cosine_sim = dot / denom
 
-        # Get top_k results sorted by similarity
-        top_indices = np.argsort(-cosine_sim)[:top_k]
+            # Get top_k results sorted by similarity
+            top_indices = np.argsort(-cosine_sim)[:top_k]
 
-        results: List[Tuple[Chunk, float]] = []
-        for idx in top_indices:
-            score = float(cosine_sim[idx])
-            if score < similarity_threshold:
-                continue
-            chunk = self._chunks[int(idx)]
-            if document_ids is not None and chunk.metadata.document_id not in document_ids:
-                continue
-            print(
-                f"Debug: Chunk {idx} similarity score: {score:.4f} - "
-                f"Preview: {chunk.content[:100]}"
-            )
-            results.append((chunk, score))
+            results: List[Tuple[Chunk, float]] = []
+            for idx in top_indices:
+                score = float(cosine_sim[idx])
+                if score < similarity_threshold:
+                    continue
+                chunk = self._chunks[int(idx)]
+                if document_ids is not None and chunk.metadata.document_id not in document_ids:
+                    continue
+                results.append((chunk, score))
 
-        print(f"Debug: Query '{query}' returned {len(results)} results (threshold={similarity_threshold}) out of {len(self._chunks)} chunks")
+            logger.info(f"Vector search complete: {len(results)} results (threshold={similarity_threshold})")
+            if results:
+                logger.debug(f"Top result: Page {results[0][0].metadata.page_number}, Score: {results[0][1]:.4f}")
+        
         return results
 
 
@@ -194,7 +194,7 @@ class ChatOrchestrator:
 
         if not results:
             # If no results, try with even lower threshold.
-            print(f"Debug: No results with threshold 0.2, trying with 0.0")
+            logger.warning("No results with threshold 0.2, retrying with 0.0")
             results = self._store.search(
                 request.question,
                 similarity_threshold=0.0,
@@ -219,7 +219,8 @@ class ChatOrchestrator:
                 if any(k in query_lower for k in summary_keywords):
                     # Use the first few chunks as context for a high‑level
                     # summary answer.
-                    print("Debug: No semantic hits, using first chunks for summary request.")
+                    logger.info("Summary request detected with no semantic matches")
+                    logger.info("Using first 10 chunks for general summary")
                     base_chunks = list(getattr(self._store, "_chunks", []))
                     if allowed_document_ids is not None:
                         base_chunks = [
@@ -272,19 +273,30 @@ class ChatOrchestrator:
         # - Lower (0.4-0.5): More lenient, includes somewhat related pages
         REFERENCE_THRESHOLD = 0.5
         
-        for chunk, score in results[:5]:
-            print(f"Debug: Evaluating chunk - Page {chunk.metadata.page_number}, Score: {score:.4f}, Threshold: {REFERENCE_THRESHOLD}")
+        print(f"\n{'='*80}")
+        print(f"📚 REFERENCE FILTERING")
+        print(f"{'='*80}")
+        print(f"Threshold: {REFERENCE_THRESHOLD} (only chunks above this score become references)")
+        print(f"{'-'*80}")
+        
+        for i, (chunk, score) in enumerate(results[:5], 1):
+            page = chunk.metadata.page_number
+            status = ""
+            
             if score < REFERENCE_THRESHOLD:
-                print(f"  ❌ Skipped (score {score:.4f} < {REFERENCE_THRESHOLD})")
+                status = f"❌ SKIPPED - Score too low ({score:.4f} < {REFERENCE_THRESHOLD})"
+                print(f"  {i}. Page {page:2d} | Score: {score:.4f} | {status}")
                 continue
                 
             key = (chunk.metadata.document_id, chunk.metadata.page_number)
             if key in added_keys:
-                print(f"  ⚠️  Skipped (duplicate page)")
+                status = f"⚠️  SKIPPED - Duplicate page"
+                print(f"  {i}. Page {page:2d} | Score: {score:.4f} | {status}")
                 continue
-            added_keys.add(key)
             
-            print(f"  ✅ Added to references")
+            added_keys.add(key)
+            status = f"✅ ADDED as reference"
+            print(f"  {i}. Page {page:2d} | Score: {score:.4f} | {status}")
 
             references.append(
                 Reference(
@@ -297,8 +309,13 @@ class ChatOrchestrator:
                 )
             )
         
-        print(f"Debug: Total references returned: {len(references)}")
-        print(f"Debug: Reference pages: {[ref.page_number for ref in references]}")
+        print(f"{'-'*80}")
+        print(f"✅ Total references: {len(references)}")
+        if references:
+            print(f"📄 Pages included: {[ref.page_number for ref in references]}")
+        else:
+            print(f"⚠️  No references met the threshold criteria")
+        print(f"{'='*80}\n")
 
         return {
             "context": context,

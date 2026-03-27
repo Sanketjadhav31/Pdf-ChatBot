@@ -1,36 +1,37 @@
+import asyncio
+import os
 import uuid
-from pathlib import Path
+from datetime import datetime, timedelta
+from io import BytesIO
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
-from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
 
-from database import UploadedDocument, get_current_user, get_db, User
+from database import get_current_user, get_database, get_gridfs
 from models.schemas import UploadResponse, UploadedDocumentItem
 from services.pdf_loader import extract_chunks_from_pdf
 from services.rag_service import vector_store
+from logger_config import setup_logger, PerformanceTimer, log_step
 
+logger = setup_logger(__name__)
 router = APIRouter(tags=["documents"])
 
-# Store uploaded PDFs temporarily
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+# Prevent too many concurrent uploads from queueing inside MongoDB/embedding calls.
+# This is the main cause of the "9-10s per file" feeling when you upload many PDFs at once.
+UPLOAD_CONCURRENCY = int(os.getenv("UPLOAD_CONCURRENCY", "2"))
+upload_processing_semaphore = asyncio.Semaphore(UPLOAD_CONCURRENCY)
 
 
 @router.post("/documents/upload", response_model=UploadResponse)
 async def upload_pdf(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    gridfs = Depends(get_gridfs),
+    current_user: dict = Depends(get_current_user),
 ) -> UploadResponse:
     """
-    Upload a single PDF, save it, and process chunks synchronously.
+    Upload a single PDF, save it to GridFS, and process chunks synchronously.
     Returns after processing is complete so chat can work immediately.
-
-    This endpoint is intentionally synchronous so the frontend can show
-    real progress and immediately start chatting with the uploaded file.
-    Large PDFs are automatically down-sampled instead of failing with
-    an error, so users can still work with long documents.
     """
     if file.content_type != "application/pdf":
         raise ValueError("Only PDF files are supported.")
@@ -38,173 +39,259 @@ async def upload_pdf(
     raw_bytes = await file.read()
     document_id = str(uuid.uuid4())
 
-    # Save PDF file for viewing
-    pdf_path = UPLOAD_DIR / f"{document_id}.pdf"
-    with open(pdf_path, "wb") as f:
-        f.write(raw_bytes)
+    # Process chunks synchronously (bounded by upload_processing_semaphore)
+    gridfs_file_id = None
 
-    # Process chunks synchronously - wait for completion
-    # This ensures the vector store is ready before returning
-    try:
-        print(f"PROCESSING PDF: {file.filename}")
-        print(f"Document ID: {document_id}")
-        print(f"File size: {len(raw_bytes) / 1024:.2f} KB")
-        
-        print(f"\n🔍 Extracting text chunks from PDF...")
-        chunks = extract_chunks_from_pdf(
-            document_id=document_id,
-            filename=file.filename or "document.pdf",
-            file_bytes=raw_bytes,
-        )
-        print(f"✅ Extracted {len(chunks)} chunks from PDF")
+    async with upload_processing_semaphore:
+        with PerformanceTimer(logger, f"PDF Upload & Processing: {file.filename}"):
+            try:
+                log_step(
+                    logger,
+                    "PDF Upload Started",
+                    {
+                        "Filename": file.filename,
+                        "Document ID": document_id,
+                        "File size": f"{len(raw_bytes) / 1024:.2f} KB",
+                    },
+                )
 
-        # Hard limit to avoid very large PDFs exhausting embedding quota.
-        # For very long PDFs we *down-sample* the chunks instead of failing
-        # the upload, so the user can still chat with a representative
-        # summary of the document.
-        MAX_CHUNKS = 200
-        if len(chunks) > MAX_CHUNKS:
-            print(f"PDF too large: {len(chunks)} chunks (limit {MAX_CHUNKS})")
-            # Keep a representative sample of chunks spread across the document.
-            # This preserves coverage from beginning, middle and end while
-            # respecting the quota-friendly limit.
-            step = max(len(chunks) // MAX_CHUNKS, 1)
-            sampled_chunks = [chunks[i] for i in range(0, len(chunks), step)]
-            if len(sampled_chunks) > MAX_CHUNKS:
-                sampled_chunks = sampled_chunks[:MAX_CHUNKS]
-            print(
-                f"Down-sampling chunks: original={len(chunks)}, "
-                f"sampled={len(sampled_chunks)}, step={step}"
-            )
-            chunks = sampled_chunks
+                # Upload PDF to GridFS
+                with PerformanceTimer(logger, "Upload to GridFS"):
+                    gridfs_file_id = await gridfs.upload_from_stream(
+                        filename=file.filename or "document.pdf",
+                        source=BytesIO(raw_bytes),
+                        metadata={
+                            "document_id": document_id,
+                            "user_id": current_user["_id"],
+                            "content_type": "application/pdf",
+                            "original_filename": file.filename
+                            or "document.pdf",
+                        },
+                    )
+                log_step(
+                    logger,
+                    "GridFS Upload Complete",
+                    {"GridFS ID": str(gridfs_file_id)},
+                )
 
-        vector_store.add_chunks(chunks)
+                # Extract text chunks
+                with PerformanceTimer(logger, "Text Extraction from PDF"):
+                    chunks = extract_chunks_from_pdf(
+                        document_id=document_id,
+                        filename=file.filename or "document.pdf",
+                        file_bytes=raw_bytes,
+                    )
+                log_step(
+                    logger,
+                    "Text Extraction Complete",
+                    {"Total chunks": len(chunks)},
+                )
 
-        # Persist uploaded document metadata for history
-        db_doc = UploadedDocument(
-            id=document_id,
-            user_id=current_user.id,
-            filename=file.filename or "document.pdf",
-            stored_path=str(pdf_path),
-        )
-        db.add(db_doc)
-        db.commit()
-        
-        print(f"\n✨ PDF processing complete!")
-        print(f"{'='*60}\n")
-        
-        return UploadResponse(
-            document_id=document_id,
-            filename=file.filename or "document.pdf",
-            total_chunks=len(chunks),
-        )
-    except Exception as e:
-        print(f"Error processing PDF {file.filename}: {e}")
-        message = str(e)
+                # Hard limit to avoid very large PDFs exhausting embedding quota
+                MAX_CHUNKS = int(os.getenv("MAX_PDF_CHUNKS", "400"))
+                if len(chunks) > MAX_CHUNKS:
+                    logger.warning(
+                        f"PDF too large: {len(chunks)} chunks (limit: {MAX_CHUNKS})"
+                    )
+                    logger.info("Sampling chunks to fit within limit...")
+                    step = max(len(chunks) // MAX_CHUNKS, 1)
+                    sampled_chunks = [
+                        chunks[i] for i in range(0, len(chunks), step)
+                    ]
+                    if len(sampled_chunks) > MAX_CHUNKS:
+                        sampled_chunks = sampled_chunks[:MAX_CHUNKS]
+                    logger.info(
+                        f"Down-sampling: original={len(chunks)}, "
+                        f"sampled={len(sampled_chunks)}, step={step}"
+                    )
+                    chunks = sampled_chunks
 
-        # Surface quota issues more clearly
-        if "RESOURCE_EXHAUSTED" in message or "rate-limits" in message:
-            if pdf_path.exists():
-                pdf_path.unlink()
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    "The PDF is large and embedding exceeded the current AI quota. "
-                    "Please wait a bit and try again, or use a smaller document."
-                ),
-            )
+                # Store chunks in vector store with embeddings
+                with PerformanceTimer(
+                    logger, "Generate Embeddings & Store in Vector DB"
+                ):
+                    vector_store.add_chunks(chunks)
 
-        # Clean up the saved file if processing failed
-        if pdf_path.exists():
-            pdf_path.unlink()
-        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {message}")
+                log_step(
+                    logger,
+                    "Vector Store Updated",
+                    {
+                        "Chunks stored": len(chunks),
+                        "Total vectors": vector_store.size,
+                    },
+                )
+
+                # Persist uploaded document metadata
+                with PerformanceTimer(logger, "Save Metadata to Database"):
+                    db_doc = {
+                        "_id": document_id,
+                        "user_id": current_user["_id"],
+                        "filename": file.filename or "document.pdf",
+                        "gridfs_file_id": str(gridfs_file_id),
+                        "file_size": len(raw_bytes),
+                        "created_at": datetime.utcnow()
+                        + timedelta(hours=5, minutes=30),
+                    }
+                    await db.uploaded_documents.insert_one(db_doc)
+
+                log_step(
+                    logger,
+                    "Upload Complete",
+                    {
+                        "Document ID": document_id,
+                        "Chunks stored": len(chunks),
+                    },
+                )
+
+                return UploadResponse(
+                    document_id=document_id,
+                    filename=file.filename or "document.pdf",
+                    total_chunks=len(chunks),
+                )
+            except Exception as e:
+                logger.error(f"Error processing PDF: {file.filename}")
+                logger.error(f"Error details: {str(e)}", exc_info=True)
+                message = str(e)
+
+                # Surface quota issues more clearly
+                if "RESOURCE_EXHAUSTED" in message or "rate-limits" in message:
+                    # Clean up GridFS file if it was uploaded
+                    if gridfs_file_id:
+                        try:
+                            await gridfs.delete(gridfs_file_id)
+                            logger.info(
+                                f"Cleaned up GridFS file: {gridfs_file_id}"
+                            )
+                        except Exception as cleanup_error:
+                            logger.error(
+                                f"Failed to cleanup GridFS file: {cleanup_error}"
+                            )
+                    raise HTTPException(
+                        status_code=429,
+                        detail=(
+                            "The PDF is large and embedding exceeded the current AI quota. "
+                            "Please wait a bit and try again, or use a smaller document."
+                        ),
+                    )
+
+                # Clean up GridFS file if processing failed
+                if gridfs_file_id:
+                    try:
+                        await gridfs.delete(gridfs_file_id)
+                        logger.info(
+                            f"Cleaned up GridFS file: {gridfs_file_id}"
+                        )
+                    except Exception as cleanup_error:
+                        logger.error(
+                            f"Failed to cleanup GridFS file: {cleanup_error}"
+                        )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to process PDF: {message}",
+                )
 
 
 @router.get("/documents/{document_id}/view")
-async def view_pdf(document_id: str):
+async def view_pdf(
+    document_id: str,
+    db = Depends(get_database),
+    gridfs = Depends(get_gridfs),
+    current_user: dict = Depends(get_current_user),
+):
     """
-    View a PDF document by its ID.
+    View a PDF document by its ID from GridFS.
     """
-    pdf_path = UPLOAD_DIR / f"{document_id}.pdf"
+    # Find the document metadata
+    doc = await db.uploaded_documents.find_one({
+        "_id": document_id,
+        "user_id": current_user["_id"]
+    })
     
-    if not pdf_path.exists():
+    if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    return FileResponse(
-        path=pdf_path,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": "inline",
-            "Cache-Control": "public, max-age=3600",
-            "Accept-Ranges": "bytes"
-        }
-    )
+    # Get GridFS file ID
+    gridfs_file_id = doc.get("gridfs_file_id")
+    if not gridfs_file_id:
+        raise HTTPException(status_code=404, detail="PDF file not found in storage")
+    
+    try:
+        from bson import ObjectId
+        # Download file from GridFS
+        grid_out = await gridfs.open_download_stream(ObjectId(gridfs_file_id))
+        file_data = await grid_out.read()
+        
+        # Return as streaming response
+        return StreamingResponse(
+            BytesIO(file_data),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": "inline",
+                "Cache-Control": "public, max-age=3600",
+            }
+        )
+    except Exception as e:
+        print(f"❌ Error retrieving PDF from GridFS: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve PDF")
 
 
 @router.get("/documents", response_model=list[UploadedDocumentItem])
 async def list_documents(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     List uploaded PDFs for the current user.
-    Kept in sync with chat-session recency so reopening old sessions
-    can restore their "active PDF" state.
     """
-    from datetime import datetime, timedelta
-    cutoff = datetime.utcnow() - timedelta(days=30)
-    docs = (
-        db.query(UploadedDocument)
-        .filter(
-            UploadedDocument.user_id == current_user.id,
-            UploadedDocument.created_at >= cutoff,
-        )
-        .order_by(UploadedDocument.created_at.desc())
-        .all()
-    )
+    cutoff = datetime.utcnow() - timedelta(days=30) + timedelta(hours=5, minutes=30)
+    docs = await db.uploaded_documents.find({
+        "user_id": current_user["_id"],
+        "created_at": {"$gte": cutoff}
+    }).sort("created_at", -1).to_list(length=None)
+    
     return [
         UploadedDocumentItem(
-            id=d.id,
-            filename=d.filename,
-            created_at=d.created_at,
+            id=d["_id"],
+            filename=d["filename"],
+            created_at=d["created_at"],
         )
         for d in docs
     ]
 
 
-
 @router.delete("/documents/{document_id}")
 async def delete_document(
     document_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    gridfs = Depends(get_gridfs),
+    current_user: dict = Depends(get_current_user),
 ):
     """
-    Delete a document and its associated chunks from the vector store.
+    Delete a document and its associated chunks from the vector store and GridFS.
     """
     # Find the document in the database
-    doc = (
-        db.query(UploadedDocument)
-        .filter(
-            UploadedDocument.id == document_id,
-            UploadedDocument.user_id == current_user.id,
-        )
-        .first()
-    )
+    doc = await db.uploaded_documents.find_one({
+        "_id": document_id,
+        "user_id": current_user["_id"]
+    })
     
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Delete the PDF file from disk
-    pdf_path = UPLOAD_DIR / f"{document_id}.pdf"
-    if pdf_path.exists():
-        pdf_path.unlink()
+    # Delete the PDF file from GridFS
+    gridfs_file_id = doc.get("gridfs_file_id")
+    if gridfs_file_id:
+        try:
+            from bson import ObjectId
+            await gridfs.delete(ObjectId(gridfs_file_id))
+            print(f"✅ Deleted PDF from GridFS (ID: {gridfs_file_id})")
+        except Exception as e:
+            print(f"⚠️  Failed to delete PDF from GridFS: {e}")
     
     # Delete chunks from vector store
     vector_store.delete_chunks_by_document(document_id)
     
     # Delete from database
-    db.delete(doc)
-    db.commit()
+    await db.uploaded_documents.delete_one({"_id": document_id})
     
     return {"message": "Document deleted successfully", "document_id": document_id}

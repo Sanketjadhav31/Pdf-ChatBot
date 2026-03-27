@@ -8,8 +8,7 @@ load_dotenv()
 
 
 class EmbeddingService:
-    """Service to handle text embeddings using Google's Generative AI"""
-
+   
     KNOWN_DIMENSIONS: dict[str, int] = {
         "models/gemini-embedding-001": 3072,
         "models/text-embedding-004": 768,
@@ -31,7 +30,7 @@ class EmbeddingService:
 
         # Resolve dimension once and cache it to avoid hardcoded drift.
         self._dimension = self._resolve_dimension()
-        print(f"Embedding dimension: {self._dimension}")
+        print(f"Embedding dimensions: {self._dimension}")
     
     def embed_text(self, text: str) -> np.ndarray:
         """Generate embedding for a single text"""
@@ -47,7 +46,7 @@ class EmbeddingService:
 
         Uses a small thread pool to parallelise requests to the Gemini
         embedding API for faster processing while keeping concurrency
-        modest to avoid hammering rate limits.
+        modest to avoid hammering rate I'm temporarily rate-limited. Please try again in a few secondss.
         """
         total = len(texts)
         if total == 0:

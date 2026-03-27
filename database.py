@@ -1,178 +1,190 @@
 import os
+import socket
 from datetime import datetime, timedelta
-from typing import Generator, Optional
+from typing import Optional, Dict, Any
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 import bcrypt
 from pydantic import BaseModel
-from sqlalchemy import (
-    Column,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    create_engine,
-    func,
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker, Session
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from pymongo import ASCENDING, DESCENDING
+from pymongo.errors import DuplicateKeyError
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pdf_chatbot.db")
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-Base = declarative_base()
+# Custom DNS Configuration
+USE_CUSTOM_DNS = os.getenv("USE_CUSTOM_DNS", "false").lower() == "true"
+DNS_SERVERS = os.getenv("DNS_SERVERS", "8.8.8.8,8.8.4.4").split(",")
+FORCE_IPV4 = os.getenv("FORCE_IPV4", "false").lower() == "true"
 
 
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    username = Column(String(255), nullable=False)
-    hashed_password = Column(String(255), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
-    uploaded_documents = relationship("UploadedDocument", back_populates="user", cascade="all, delete-orphan")
-
-
-class ChatSession(Base):
-    __tablename__ = "chat_sessions"
-
-    id = Column(String(64), primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    title = Column(String(255), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    user = relationship("User", back_populates="chat_sessions")
-    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
-
-
-class ChatSessionDocument(Base):
-    """
-    Association table: which uploaded documents were used for a given chat session.
-    This allows session reconnection to restore PDF context from the DB.
-    """
-
-    __tablename__ = "chat_session_documents"
-
-    session_id = Column(String(64), ForeignKey("chat_sessions.id"), primary_key=True, index=True)
-    document_id = Column(String(64), ForeignKey("uploaded_documents.id"), primary_key=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-
-
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
-
-    id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(String(64), ForeignKey("chat_sessions.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    role = Column(String(20), nullable=False)  # "user" or "assistant"
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-
-    session = relationship("ChatSession", back_populates="messages")
-    user = relationship("User")
+def configure_custom_dns():
+    """Configure custom DNS servers if enabled"""
+    if not USE_CUSTOM_DNS:
+        return
+    
+    print(f"🔧 Configuring custom DNS: {DNS_SERVERS}")
+    
+    # Store original getaddrinfo
+    original_getaddrinfo = socket.getaddrinfo
+    
+    def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        """Custom DNS resolver using specified DNS servers"""
+        if FORCE_IPV4:
+            family = socket.AF_INET
+        
+        try:
+            return original_getaddrinfo(host, port, family, type, proto, flags)
+        except socket.gaierror as e:
+            print(f"⚠️ DNS resolution failed for {host}: {e}")
+            print(f"🔄 Retrying with custom DNS servers...")
+            
+            # Fallback to custom DNS
+            import dns.resolver
+            resolver = dns.resolver.Resolver()
+            resolver.nameservers = DNS_SERVERS
+            
+            try:
+                answers = resolver.resolve(host, 'A' if FORCE_IPV4 else 'AAAA')
+                ip = str(answers[0])
+                print(f"✅ Resolved {host} to {ip}")
+                return [(family or socket.AF_INET, type, proto, '', (ip, port))]
+            except Exception as dns_error:
+                print(f"❌ Custom DNS resolution failed: {dns_error}")
+                raise e
+    
+    # Monkey patch socket.getaddrinfo
+    socket.getaddrinfo = custom_getaddrinfo
+    print("✅ Custom DNS configured successfully")
 
 
-class UploadedDocument(Base):
-    __tablename__ = "uploaded_documents"
-
-    id = Column(String(64), primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    filename = Column(String(512), nullable=False)
-    stored_path = Column(String(1024), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-
-    user = relationship("User", back_populates="uploaded_documents")
+# Configure DNS before MongoDB connection
+configure_custom_dns()
 
 
-class EmbeddingIndexMetadata(Base):
-    """
-    Stores embedding/index compatibility metadata so model swaps are detected
-    before vectors are written with mismatched dimensions.
-    """
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_URI_STANDARD = os.getenv("MONGODB_URI_STANDARD")
 
-    __tablename__ = "embedding_index_metadata"
-
-    index_name = Column(String(255), primary_key=True)
-    embedding_model_name = Column(String(255), nullable=False)
-    embedding_dimension = Column(Integer, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+# Global MongoDB client
+mongodb_client: Optional[AsyncIOMotorClient] = None
+database = None
+gridfs_bucket: Optional[AsyncIOMotorGridFSBucket] = None
 
 
-def init_db() -> None:
-    """Create all tables. Call this from startup."""
-    Base.metadata.create_all(bind=engine)
-
-
-def ensure_embedding_index_metadata(
-    embedding_model_name: str,
-    embedding_dimension: int,
-    index_name: str = "in_memory_default",
-) -> None:
-    """
-    Fail fast if existing index metadata does not match active embedding config.
-    Create metadata on first run.
-    """
-    db = SessionLocal()
+async def connect_to_mongodb():
+    """Initialize MongoDB connection with fallback support"""
+    global mongodb_client, database, gridfs_bucket
+    
+    if not MONGODB_URI:
+        raise ValueError("MONGODB_URI environment variable is required")
+    
     try:
-        existing = (
-            db.query(EmbeddingIndexMetadata)
-            .filter(EmbeddingIndexMetadata.index_name == index_name)
-            .first()
+        print("🔌 Connecting to MongoDB (SRV)...")
+        mongodb_client = AsyncIOMotorClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000,
+            socketTimeoutMS=10000,
         )
-
-        if existing is None:
-            db.add(
-                EmbeddingIndexMetadata(
-                    index_name=index_name,
-                    embedding_model_name=embedding_model_name,
-                    embedding_dimension=embedding_dimension,
+        # Test connection
+        await mongodb_client.admin.command('ping')
+        print("✅ Connected to MongoDB successfully (SRV)")
+        
+    except Exception as e:
+        print(f"⚠️ SRV connection failed: {e}")
+        
+        if MONGODB_URI_STANDARD:
+            try:
+                print("🔄 Trying fallback standard connection...")
+                mongodb_client = AsyncIOMotorClient(
+                    MONGODB_URI_STANDARD,
+                    serverSelectionTimeoutMS=10000,
+                    connectTimeoutMS=10000,
+                    socketTimeoutMS=10000,
                 )
-            )
-            db.commit()
-            print(
-                f"Created embedding index metadata: index={index_name}, "
-                f"model={embedding_model_name}, dimension={embedding_dimension}"
-            )
-            return
-
-        if existing.embedding_dimension != embedding_dimension:
-            raise RuntimeError(
-                "Embedding dimension mismatch for index "
-                f"'{index_name}': existing={existing.embedding_dimension}, "
-                f"current={embedding_dimension}. Recreate the index before startup."
-            )
-
-        if existing.embedding_model_name != embedding_model_name:
-            print(
-                "⚠️ Embedding model changed while dimension stayed compatible: "
-                f"existing={existing.embedding_model_name}, current={embedding_model_name}"
-            )
-            existing.embedding_model_name = embedding_model_name
-            db.commit()
-    finally:
-        db.close()
+                await mongodb_client.admin.command('ping')
+                print("✅ Connected to MongoDB successfully (Standard)")
+            except Exception as fallback_error:
+                print(f"❌ Fallback connection failed: {fallback_error}")
+                raise
+        else:
+            raise
+    
+    # Extract database name from URI
+    db_name = MONGODB_URI.split('/')[-1].split('?')[0]
+    database = mongodb_client[db_name]
+    
+    # Initialize GridFS bucket for file storage
+    gridfs_bucket = AsyncIOMotorGridFSBucket(database)
+    
+    # Create indexes
+    await create_indexes()
+    print(f"✅ Using database: {db_name}")
+    print(f"✅ GridFS initialized for file storage")
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+async def close_mongodb_connection():
+    """Close MongoDB connection"""
+    global mongodb_client
+    if mongodb_client:
+        mongodb_client.close()
+        print("🔌 MongoDB connection closed")
+
+
+async def create_indexes():
+    """Create necessary indexes for collections"""
+    if database is None:
+        return
+    
+    # Users collection indexes
+    await database.users.create_index([("email", ASCENDING)], unique=True)
+    await database.users.create_index([("created_at", DESCENDING)])
+    
+    # Chat sessions indexes
+    await database.chat_sessions.create_index([("user_id", ASCENDING)])
+    await database.chat_sessions.create_index([("created_at", DESCENDING)])
+    await database.chat_sessions.create_index([("updated_at", DESCENDING)])
+    
+    # Chat messages indexes
+    await database.chat_messages.create_index([("session_id", ASCENDING)])
+    await database.chat_messages.create_index([("user_id", ASCENDING)])
+    await database.chat_messages.create_index([("created_at", DESCENDING)])
+    
+    # Chat session documents indexes
+    await database.chat_session_documents.create_index([("session_id", ASCENDING)])
+    await database.chat_session_documents.create_index([("document_id", ASCENDING)])
+    
+    # Uploaded documents indexes
+    await database.uploaded_documents.create_index([("user_id", ASCENDING)])
+    await database.uploaded_documents.create_index([("created_at", DESCENDING)])
+    
+    # Embedding index metadata
+    await database.embedding_index_metadata.create_index([("index_name", ASCENDING)], unique=True)
+    
+    print("✅ Database indexes created")
+
+
+def get_database():
+    """Dependency to get database instance"""
+    if database is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection not established"
+        )
+    return database
+
+
+def get_gridfs():
+    """Dependency to get GridFS bucket instance"""
+    if gridfs_bucket is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="GridFS not initialized"
+        )
+    return gridfs_bucket
 
 
 # --- Auth helpers (JWT + password hashing) ---
@@ -195,7 +207,7 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))+ + timedelta(hours=5, minutes=30)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -205,7 +217,10 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
 
 
-def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)) -> User:
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db = Depends(get_database)
+) -> Dict[str, Any]:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -220,8 +235,58 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
     except JWTError:
         raise credentials_exception
 
-    user = db.query(User).filter(User.id == int(token_data.sub)).first()
+    user = await db.users.find_one({"_id": token_data.sub})
     if user is None:
         raise credentials_exception
     return user
 
+
+async def ensure_embedding_index_metadata(
+    embedding_model_name: str,
+    embedding_dimension: int,
+    index_name: str = "in_memory_default",
+) -> None:
+    """
+    Fail fast if existing index metadata does not match active embedding config.
+    Create metadata on first run.
+    """
+    if database is None:
+        return
+    
+    existing = await database.embedding_index_metadata.find_one({"index_name": index_name})
+
+    if existing is None:
+        await database.embedding_index_metadata.insert_one({
+            "index_name": index_name,
+            "embedding_model_name": embedding_model_name,
+            "embedding_dimension": embedding_dimension,
+            "created_at": datetime.utcnow()+  timedelta(hours=5, minutes=30),
+            "updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
+        })
+        print(
+            f"Created embedding index metadata: index={index_name}, "
+            f"model={embedding_model_name}, dimension={embedding_dimension}"
+        )
+        return
+
+    if existing["embedding_dimension"] != embedding_dimension:
+        raise RuntimeError(
+            "Embedding dimension mismatch for index "
+            f"'{index_name}': existing={existing['embedding_dimension']}, "
+            f"current={embedding_dimension}. Recreate the index before startup."
+        )
+
+    if existing["embedding_model_name"] != embedding_model_name:
+        print(
+            "⚠️ Embedding model changed while dimension stayed compatible: "
+            f"existing={existing['embedding_model_name']}, current={embedding_model_name}"
+        )
+        await database.embedding_index_metadata.update_one(
+            {"index_name": index_name},
+            {
+                "$set": {
+                    "embedding_model_name": embedding_model_name,
+                    "updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30)
+                }
+            }
+        )

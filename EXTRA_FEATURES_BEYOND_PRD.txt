@@ -1,0 +1,30 @@
+EXTRA FEATURES IMPLEMENTED BEYOND ORIGINAL PRD
+
+1. Authentication System - JWT-based user registration/login with email and username
+2. Multi-User Support - User-specific document isolation and chat session management
+3. Last 3 Q&A Context - Sends last 6 messages (3 exchanges) to LLM for conversation continuity
+4. Message Classification - AI classifier routes messages to SOCIAL/PDF_QUESTION/OUT_OF_SCOPE paths
+5. Social Response Handler - Warm conversational responses for greetings/thanks using user's first name
+6. Query Rewriting - Resolves follow-up references ("4th point", "it") into self-contained search queries
+7. Rate Limit Handling - Graceful error messages for API rate limits (429 errors)
+8. Refusal Poisoning Prevention - Filters out refusal messages from LLM history to prevent context contamination
+10. Chat Session Persistence - Last 7 days of chat history with session titles and timestamps
+11. Session-Document Linking - Tracks which PDFs belong to each chat session for context restoration
+12. Snippet Display - Shows text evidence snippets (for the better reference)
+13. Header Deduplication - Removes repeated PDF headers from evidence snippets for cleaner display
+14. Collapsible Sources UI - Expandable reference cards grouped by document with page numbers
+15. PDF Viewer Integration - Click-to-open references directly to specific pages in embedded viewer
+16. Document Search - Sidebar search filter for uploaded PDFs by filename
+17. Dual View Mode - Toggle between "Chat History" and "Uploaded PDFs" in sidebar
+18. Upload Progress Tracking - Real-time progress bars for multi-file uploads
+19. Document Deduplication - Prevents duplicate filenames, keeps most recent upload
+20. Batch Embedding - Processes multiple chunks simultaneously for faster upload
+21. Similarity Threshold Tuning - Dynamic threshold with fallback for edge cases
+22. Reference Threshold Filter - Only shows sources with >50% similarity score
+23. Word Count Constraint - not long answer for the maintain the context window
+24. Theme Toggle - Dark/light mode with localStorage persistence
+25. Auto-Focus Chat Input - Global keypress detection focuses chat input for seamless typing
+26. Markdown Rendering - Rich text formatting in chat messages with syntax highlighting
+27. Session Deletion - Delete individual chat sessions from sidebar
+28. Document Deletion - Remove uploaded PDFs with automatic vector store cleanup
+29. Logout Functionality - Clear auth token and reset application state

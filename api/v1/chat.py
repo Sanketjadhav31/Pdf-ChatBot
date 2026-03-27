@@ -1,15 +1,11 @@
 from datetime import datetime, timedelta
 from typing import List
 import uuid
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 
-from database import ChatMessage as ChatMessageModel
-from database import ChatSession as ChatSessionModel
-from database import ChatSessionDocument
-from database import UploadedDocument
-from database import User, get_current_user, get_db
+from database import get_current_user, get_database
 from models.schemas import (
     ChatHistoryItem,
     ChatHistoryResponse,
@@ -20,138 +16,294 @@ from models.schemas import (
 )
 from services.rag_service import chat_orchestrator
 from services.llm_service import llm_service
+from logger_config import setup_logger, PerformanceTimer, log_step
 
-
+logger = setup_logger(__name__)
 router = APIRouter(tags=["chat"])
+
+_SOCIAL_PREFIX_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|hii+|heyy+|heyyy+|good\s+morning|good\s+afternoon|good\s+evening)\b[\s,!.:-]*",
+    re.IGNORECASE,
+)
+
+
+def _normalize_filename(value: str) -> str:
+    value = (value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _resolve_pdf_scope(
+    question: str,
+    available_docs: List[dict],
+    requested_doc_ids: List[str],
+    active_doc_ids: List[str],
+) -> List[str]:
+    """
+    Resolve which PDFs should be used for retrieval for this question.
+    Priority:
+    1) Explicitly requested docs from UI.
+    2) Explicit multi-doc intent ("both pdfs", "all docs").
+    3) Filename mention in question.
+    4) Most recently active uploaded PDF in this session.
+    5) All available session docs.
+    """
+    if requested_doc_ids:
+        return requested_doc_ids
+
+    available_ids = [d["_id"] for d in available_docs]
+    if not available_ids:
+        return []
+
+    q = (question or "").lower()
+    # Normalize separators and tolerate spacing/typos like:
+    # "summarizethis", "all the pdf", "lastt all pdf", etc.
+    q_norm = re.sub(r"[^a-z0-9]+", " ", q).strip()
+
+    multi_doc_patterns = [
+        r"\bboth\s+(the\s+)?(pdfs?|docs?|documents?|files?)\b",
+        r"\ball\s+(the\s+)?(pdfs?|docs?|documents?|files?)\b",
+        r"\b(previous|prev|last|lastt|earlier)\s+(pdfs?|docs?|documents?|files?)\b",
+        r"\b(all|both)\s+(previous|prev|last|lastt|earlier)\s+(pdfs?|docs?|documents?|files?)\b",
+        r"\b(previous|prev|last|lastt|earlier)\s+(all|both)\s+(the\s+)?(pdfs?|docs?|documents?|files?)\b",
+        r"\b(all|both)\s+(the\s+)?(previous|prev|last|lastt|earlier)\b.*\b(pdfs?|docs?|documents?|files?)\b",
+        r"\b(previous|prev|last|lastt|earlier)\b.*\b(all|both)\b.*\b(pdfs?|docs?|documents?|files?)\b",
+    ]
+    if any(re.search(p, q_norm) for p in multi_doc_patterns):
+        return available_ids
+
+    matched: List[str] = []
+    normalized_question = _normalize_filename(question)
+    for doc in available_docs:
+        filename = doc.get("filename", "")
+        normalized_filename = _normalize_filename(filename)
+        stem = _normalize_filename(filename.rsplit(".", 1)[0] if "." in filename else filename)
+        if not normalized_filename:
+            continue
+        if (
+            normalized_filename in normalized_question
+            or (stem and stem in normalized_question)
+            or (f" {normalized_filename} " in f" {normalized_question} ")
+        ):
+            matched.append(doc["_id"])
+    if matched:
+        # Keep order and uniqueness
+        ordered_unique = list(dict.fromkeys(matched))
+        return ordered_unique
+
+    # Default scope: latest active PDF for this session.
+    # This prevents follow-up prompts like "explain in points" from
+    # unexpectedly mixing old session documents.
+    if active_doc_ids:
+        active_set = set(active_doc_ids)
+        scoped_active = [doc_id for doc_id in available_ids if doc_id in active_set]
+        if scoped_active:
+            return scoped_active
+
+    return available_ids
+
+
+def _split_social_prefix(user_message: str) -> tuple[str, str]:
+    """
+    Split a leading greeting from a mixed user message.
+    Returns: (social_prefix, remainder)
+    """
+    message = (user_message or "").strip()
+    match = _SOCIAL_PREFIX_RE.match(message)
+    if not match:
+        return "", message
+    prefix = match.group(0).strip(" ,.!:-")
+    remainder = message[match.end():].strip(" ,.!:-")
+    return prefix, remainder
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    current_user: dict = Depends(get_current_user),
 ) -> ChatResponse:
     """
     Chat endpoint that uses RAG with real LLM (Google or Ollama).
     """
-    # Resolve which PDFs belong to this session (DB is the source of truth).
-    # This fixes the "reopened session loses PDF context" bug.
-    session_id = request.session_id or str(uuid.uuid4())
+    with PerformanceTimer(logger, f"Chat Request: {request.question[:50]}..."):
+        # Resolve which PDFs belong to this session (DB is the source of truth).
+        session_id = request.session_id or str(uuid.uuid4())
 
-    # Persist / update session-linked documents:
-    # - If request provides non-empty document_ids, treat them as the active PDFs for this turn
-    #   and link them to the session in the DB.
-    # - If request provides none/empty, fall back to documents already linked to the session.
+        log_step(logger, "Chat Request Received", {
+            "User": current_user.get('username', 'Unknown'),
+            "Session": session_id,
+            "Question": request.question[:100] + "..." if len(request.question) > 100 else request.question,
+            "Documents": len(request.document_ids or [])
+        })
+
+    # Persist / update session-linked documents
     request_document_ids = request.document_ids or []
-    request_document_ids = [d for d in request_document_ids if d]  # drop falsy
+    request_document_ids = [d for d in request_document_ids if d]
 
-    # Ensure we have a session row (needed for linking documents).
-    session = (
-        db.query(ChatSessionModel)
-        .filter(
-            ChatSessionModel.id == session_id,
-            ChatSessionModel.user_id == current_user.id,
-        )
-        .first()
-    )
+    # Ensure we have a session row (use upsert to avoid duplicate key errors)
+    session = await db.chat_sessions.find_one({
+        "_id": session_id,
+        "user_id": current_user["_id"]
+    })
+    
     if session is None:
         title = request.question.strip()[:60] or "New chat"
-        session = ChatSessionModel(
-            id=session_id,
-            user_id=current_user.id,
-            title=title,
+        # Use update_one with upsert to avoid race conditions
+        await db.chat_sessions.update_one(
+            {"_id": session_id},
+            {
+                "$setOnInsert": {
+                    "_id": session_id,
+                    "user_id": current_user["_id"],
+                    "title": title,
+                    "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
+                    "active_document_ids": [],
+                },
+                "$set": {
+                    "updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
+                }
+            },
+            upsert=True
         )
-        db.add(session)
-        db.flush()
+        # Fetch the session after upsert
+        session = await db.chat_sessions.find_one({"_id": session_id})
     else:
-        if not session.title:
-            session.title = request.question.strip()[:60] or "New chat"
+        if not session.get("title"):
+            await db.chat_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {"title": request.question.strip()[:60] or "New chat"}}
+            )
 
-    # Decide the "effective" document_ids for this request.
+    # Decide the "effective" document_ids for this request
     effective_document_ids: List[str] = []
+    # Store only explicitly attached docs for this user message payload.
+    # This keeps UI chips accurate: follow-ups without upload won't show PDF cards.
+    message_document_ids: List[str] = []
     if request_document_ids:
-        # Validate ownership: only link docs that belong to this user.
-        owned_docs = (
-            db.query(UploadedDocument)
-            .filter(
-                UploadedDocument.user_id == current_user.id,
-                UploadedDocument.id.in_(request_document_ids),
-            )
-            .all()
+        # Validate ownership
+        owned_docs = await db.uploaded_documents.find({
+            "user_id": current_user["_id"],
+            "_id": {"$in": request_document_ids}
+        }).to_list(length=None)
+        requested_owned_ids = [d["_id"] for d in owned_docs]
+        message_document_ids = requested_owned_ids
+
+        # Keep previously linked session docs and add newly requested docs.
+        # This prevents losing older PDFs when a new PDF is attached later
+        # in the same chat session.
+        existing_links = await db.chat_session_documents.find({
+            "session_id": session_id
+        }).to_list(length=None)
+        existing_set = {link["document_id"] for link in existing_links}
+
+        for doc_id in requested_owned_ids:
+            if doc_id not in existing_set:
+                await db.chat_session_documents.insert_one({
+                    "session_id": session_id,
+                    "document_id": doc_id,
+                    "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30)
+                })
+                existing_set.add(doc_id)
+
+        effective_document_ids = list(existing_set)
+        # Track latest active docs for follow-up prompts without explicit filename.
+        await db.chat_sessions.update_one(
+            {"_id": session_id},
+            {"$set": {"active_document_ids": requested_owned_ids}},
         )
-        effective_document_ids = [d.id for d in owned_docs]
 
-        # Upsert links for this session.
-        if effective_document_ids:
-            # Delete links not in the new set (keeps session consistent).
-            db.query(ChatSessionDocument).filter(
-                ChatSessionDocument.session_id == session_id
-            ).filter(
-                ~ChatSessionDocument.document_id.in_(effective_document_ids)
-            ).delete(synchronize_session=False)
-
-            # Add missing links.
-            existing_links = (
-                db.query(ChatSessionDocument.document_id)
-                .filter(ChatSessionDocument.session_id == session_id)
-                .all()
+    # Fallback to documents already linked to this session
+    if not effective_document_ids:
+        existing_links = await db.chat_session_documents.find({
+            "session_id": session_id
+        }).to_list(length=None)
+        effective_document_ids = [link["document_id"] for link in existing_links]
+    active_document_ids = session.get("active_document_ids", []) if session else []
+    available_docs = []
+    if effective_document_ids:
+        available_docs = await db.uploaded_documents.find({
+            "user_id": current_user["_id"],
+            "_id": {"$in": effective_document_ids},
+        }).to_list(length=None)
+        if not active_document_ids:
+            # Backfill active scope for old sessions to the most recent linked doc.
+            latest_docs = sorted(
+                available_docs,
+                key=lambda d: d.get("created_at", datetime.min),
             )
-            existing_set = {row[0] for row in existing_links}
-            for doc_id in effective_document_ids:
-                if doc_id in existing_set:
-                    continue
-                db.add(ChatSessionDocument(session_id=session_id, document_id=doc_id))
-    else:
-        # Use previously linked docs.
-        existing_links = (
-            db.query(ChatSessionDocument.document_id)
-            .filter(ChatSessionDocument.session_id == session_id)
-            .all()
-        )
-        effective_document_ids = [row[0] for row in existing_links]
+            if latest_docs:
+                active_document_ids = [latest_docs[-1]["_id"]]
+                await db.chat_sessions.update_one(
+                    {"_id": session_id},
+                    {"$set": {"active_document_ids": active_document_ids}},
+                )
 
-    # Touch session so it bubbles to top in sidebar.
-    session.updated_at = datetime.utcnow()
-
+    # Touch session
+    await db.chat_sessions.update_one(
+        {"_id": session_id},
+        {"$set": {"updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30)}}
+    )
+    first_name = llm_service._first_name_from_username(
+    current_user.get("username", "User")
+)
     refusal_message = (
-        "I can only answer questions based on the uploaded PDF. "
-        "This information is not in your document."
+    f"Hi {first_name}, I can only answer questions based on the uploaded PDF. "
+    "This information is not in your document."
     )
     upload_needed_message = "Please upload a PDF to get started."
 
-    # Load last 3 exchanges (up to 6 messages) for conversation continuity.
-    # These are persisted in DB and should be included in the LLM prompt
-    # even for casual messages.
-    history_messages = (
-        db.query(ChatMessageModel)
-        .filter(
-            ChatMessageModel.session_id == session_id,
-            ChatMessageModel.user_id == current_user.id,
-        )
-        .order_by(ChatMessageModel.created_at.desc())
-        .limit(6)
-        .all()
-    )
+    # Load last 3 exchanges (up to 6 messages) for conversation continuity
+    history_messages = await db.chat_messages.find({
+        "session_id": session_id,
+        "user_id": current_user["_id"]
+    }).sort("created_at", -1).limit(6).to_list(length=6)
+    
     history_messages = list(reversed(history_messages))
 
-    # Refusal-poisoning prevention:
-    # Filter out pure refusals so they don't become "established context" for follow-ups.
-    # Note: we still store refusals in DB for UI continuity; we just exclude them from LLM history.
+    # Filter out pure refusals
     filtered_history_messages = []
+
     for m in history_messages:
-        if (m.role or "").strip().lower() == "assistant" and (m.content or "").strip() == refusal_message:
+        role = m.get("role", "").strip().lower()
+        content = m.get("content", "").strip().lower()
+
+        if (
+            role == "assistant"
+            and "only answer questions based on the uploaded pdf" in content
+         ):
             continue
+
         filtered_history_messages.append(m)
 
-    history = [{"role": m.role, "content": m.content} for m in filtered_history_messages]
+    history = [{"role": m["role"], "content": m["content"]} for m in filtered_history_messages]
 
-    history_for_classifier = history[-4:] if history else None
-    classification = await llm_service.classify_message(
-        request.question, history=history_for_classifier
+    print(f"\n{'#'*80}")
+    print(f"💬 NEW CHAT REQUEST")
+    print(f"{'#'*80}")
+    print(f"User: {current_user.get('username', 'Unknown')}")
+    print(f"Session: {session_id}")
+    print(f"Question: {request.question}")
+    print(f"Documents: {len(effective_document_ids)} linked")
+    print(f"History: {len(history)} messages loaded")
+    print(f"{'#'*80}\n")
+
+    # OPTIMIZED: Single API call for classification + processing
+    # This reduces API calls from 2-3 to 1-2 depending on message type
+    classify_result = await llm_service.classify_and_process(
+        request.question, 
+        history=history,
+        username=current_user["username"]
     )
+    
+    classification = classify_result["classification"]
+    
+    print(f"\n{'='*80}")
+    print(f"📊 MESSAGE CLASSIFICATION")
+    print(f"{'='*80}")
+    print(f"Type: {classification}")
+    print(f"{'='*80}\n")
 
-    # Safety fallback for rare classifier slips:
-    # If the user clearly references a numbered/document point, treat as PDF-related.
+    # Safety fallback for rare classifier slips
     if classification == "OUT_OF_SCOPE":
         import re
         q_lower = (request.question or "").lower()
@@ -173,51 +325,50 @@ async def chat(
         if doc_ref:
             classification = "PDF_QUESTION"
 
-    # Route based on classification result.
+    # Route based on classification result
     if classification == "SOCIAL":
-        answer = await llm_service.generate_social_response(
+        # Use pre-generated response from classify_and_process (saves 1 API call)
+        answer = classify_result.get("social_response") or await llm_service.generate_social_response(
             user_message=request.question,
-            username=current_user.username,
+            username=current_user["username"],
         )
         references = []
         is_relevant = False
 
     elif classification == "OUT_OF_SCOPE":
-        # No LLM call needed.
-        answer = refusal_message
+        social_prefix, remainder = _split_social_prefix(request.question)
+        if social_prefix and remainder:
+            greeting = await llm_service.generate_social_response(
+                user_message=social_prefix,
+                username=current_user["username"],
+            )
+            answer = f"{greeting} {refusal_message}"
+        else:
+            answer = refusal_message
         references = []
         is_relevant = False
 
     else:
-        # PDF_QUESTION path: build PDF context + answer with strict PDF rules.
-        search_query = request.question
-
-        # Query rewriting for follow-ups ("the 4th point", "it", "previous item", ...)
-        # so RAG retrieval doesn't depend on ambiguous references.
-        import re
-        q_lower = (request.question or "").lower()
-        looks_like_reference = bool(
-            re.search(r"\b(point|item|paragraph|section|page)\b", q_lower)
-            or re.search(r"\b\d+(st|nd|rd|th)?\b", q_lower)
-            or re.search(r"\b(it|that|this|these|those|previous|earlier|above|mentioned)\b", q_lower)
+        # PDF_QUESTION path
+        # Use pre-generated rewritten query from classify_and_process (saves 1 API call)
+        search_query = classify_result.get("rewritten_query") or request.question
+        resolved_scope_ids = _resolve_pdf_scope(
+            question=request.question,
+            available_docs=available_docs,
+            requested_doc_ids=message_document_ids,
+            active_doc_ids=active_document_ids,
         )
-        if history and looks_like_reference:
-            search_query = await llm_service.rewrite_search_query(
-                request.question, history=history
-            )
 
         orchestrator_request = request.copy(
             update={
                 "session_id": session_id,
-                # IMPORTANT: if effective_document_ids is empty, this must be
-                # treated as "no PDF context for this request" (strict PDF mode).
-                "document_ids": effective_document_ids,
+                "document_ids": resolved_scope_ids,
                 "question": search_query,
             }
         )
 
-        result = chat_orchestrator.handle_chat(orchestrator_request)
-        pdf_context = result["context"]
+        rag_result = chat_orchestrator.handle_chat(orchestrator_request)
+        pdf_context = rag_result["context"]
 
         if not pdf_context.strip():
             answer = upload_needed_message
@@ -227,29 +378,41 @@ async def chat(
             answer, is_relevant = await llm_service.generate_response(
                 prompt=request.question,
                 context=pdf_context,
-                username=current_user.username,
+                username=current_user["username"],
                 history=history,
             )
-            references = result["references"] if is_relevant else []
+            # Show references only for successful, document-grounded answers.
+            # On rate-limit/API-failure/refusal paths, is_relevant is False.
+            references = rag_result["references"] if is_relevant else []
     
-    # Persist chat session + messages
-    # (session row already exists above and has been touched)
+    # Persist chat messages
+    user_msg = {
+        "_id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "user_id": current_user["_id"],
+        "role": "user",
+        "content": request.question,
+        "document_ids": message_document_ids,
+        "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
+    }
+    assistant_msg = {
+        "_id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "user_id": current_user["_id"],
+        "role": "assistant",
+        "content": answer,
+        "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
+    }
+    await db.chat_messages.insert_many([user_msg, assistant_msg])
 
-    # Store user question and assistant answer
-    user_msg = ChatMessageModel(
-        session_id=session.id,
-        user_id=current_user.id,
-        role="user",
-        content=request.question,
-    )
-    assistant_msg = ChatMessageModel(
-        session_id=session.id,
-        user_id=current_user.id,
-        role="assistant",
-        content=answer,
-    )
-    db.add_all([user_msg, assistant_msg])
-    db.commit()
+    print(f"\n{'='*80}")
+    print(f"✅ CHAT RESPONSE COMPLETE")
+    print(f"{'='*80}")
+    print(f"Classification: {classification}")
+    print(f"Answer length: {len(answer)} characters")
+    print(f"References: {len(references)}")
+    print(f"Messages saved to database")
+    print(f"{'#'*80}\n")
 
     return ChatResponse(
         answer=answer,
@@ -257,28 +420,24 @@ async def chat(
         session_id=session_id,
     )
 
-#  last 7 days chat
+
 @router.get("/chat/sessions", response_model=List[ChatSessionSummary])
 async def list_chat_sessions(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    current_user: dict = Depends(get_current_user),
 ):
-    cutoff = datetime.utcnow() - timedelta(days=7)
-    sessions = (
-        db.query(ChatSessionModel)
-        .filter(
-            ChatSessionModel.user_id == current_user.id,
-            ChatSessionModel.created_at >= cutoff,
-        )
-        .order_by(ChatSessionModel.updated_at.desc())
-        .all()
-    )
+    cutoff = datetime.utcnow() - timedelta(days=7) + timedelta(hours=5, minutes=30)
+    sessions = await db.chat_sessions.find({
+        "user_id": current_user["_id"],
+        "created_at": {"$gte": cutoff}
+    }).sort("updated_at", -1).to_list(length=None)
+    
     return [
         ChatSessionSummary(
-            id=s.id,
-            title=s.title,
-            created_at=s.created_at,
-            updated_at=s.updated_at,
+            id=s["_id"],
+            title=s.get("title"),
+            created_at=s["created_at"],
+            updated_at=s["updated_at"],
         )
         for s in sessions
     ]
@@ -287,62 +446,59 @@ async def list_chat_sessions(
 @router.get("/chat/sessions/{session_id}", response_model=ChatHistoryResponse)
 async def get_chat_session(
     session_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    current_user: dict = Depends(get_current_user),
 ):
-    session = (
-        db.query(ChatSessionModel)
-        .filter(
-            ChatSessionModel.id == session_id,
-            ChatSessionModel.user_id == current_user.id,
-        )
-        .first()
-    )
+    session = await db.chat_sessions.find_one({
+        "_id": session_id,
+        "user_id": current_user["_id"]
+    })
+    
     if session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
 
-    messages = (
-        db.query(ChatMessageModel)
-        .filter(
-            ChatMessageModel.session_id == session.id,
-            ChatMessageModel.user_id == current_user.id,
-        )
-        .order_by(ChatMessageModel.created_at.asc())
-        .all()
-    )
+    messages = await db.chat_messages.find({
+        "session_id": session_id,
+        "user_id": current_user["_id"]
+    }).sort("created_at", 1).to_list(length=None)
 
-    # Resolve session-linked documents so the frontend can restore "active PDF"
-    # state when the user reopens a saved chat.
-    linked_doc_ids = (
-        db.query(ChatSessionDocument.document_id)
-        .filter(ChatSessionDocument.session_id == session.id)
-        .all()
-    )
-    linked_doc_id_list = [row[0] for row in linked_doc_ids]
+    # Resolve session-linked documents
+    linked_docs = await db.chat_session_documents.find({
+        "session_id": session_id
+    }).to_list(length=None)
+    linked_doc_ids = [link["document_id"] for link in linked_docs]
 
     documents: List[DocumentMetadata] = []
-    if linked_doc_id_list:
-        docs = (
-            db.query(UploadedDocument)
-            .filter(
-                UploadedDocument.user_id == current_user.id,
-                UploadedDocument.id.in_(linked_doc_id_list),
-            )
-            .all()
-        )
+    if linked_doc_ids:
+        docs = await db.uploaded_documents.find({
+            "user_id": current_user["_id"],
+            "_id": {"$in": linked_doc_ids}
+        }).to_list(length=None)
         documents = [
-            DocumentMetadata(document_id=d.id, filename=d.filename) for d in docs
+            DocumentMetadata(document_id=d["_id"], filename=d["filename"]) 
+            for d in docs
         ]
 
+    # Build a lookup so each message can include attached document metadata.
+    doc_lookup = {
+        d.document_id: d
+        for d in documents
+    }
+
     return ChatHistoryResponse(
-        session_id=session.id,
-        title=session.title,
+        session_id=session["_id"],
+        title=session.get("title"),
         messages=[
             ChatHistoryItem(
-                id=m.id,
-                role=m.role,
-                content=m.content,
-                created_at=m.created_at,
+                id=m["_id"],
+                role=m["role"],
+                content=m["content"],
+                created_at=m["created_at"],
+                attached_docs=[
+                    doc_lookup[doc_id]
+                    for doc_id in (m.get("document_ids") or [])
+                    if doc_id in doc_lookup
+                ],
             )
             for m in messages
         ],
@@ -353,25 +509,24 @@ async def get_chat_session(
 @router.delete("/chat/sessions/{session_id}")
 async def delete_chat_session(
     session_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db = Depends(get_database),
+    current_user: dict = Depends(get_current_user),
 ):
-    session = (
-        db.query(ChatSessionModel)
-        .filter(
-            ChatSessionModel.id == session_id,
-            ChatSessionModel.user_id == current_user.id,
-        )
-        .first()
-    )
+    session = await db.chat_sessions.find_one({
+        "_id": session_id,
+        "user_id": current_user["_id"]
+    })
+    
     if session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
 
-    # Remove session-document links first to keep the DB consistent.
-    db.query(ChatSessionDocument).filter(ChatSessionDocument.session_id == session_id).delete(
-        synchronize_session=False
-    )
-    db.delete(session)
-    db.commit()
+    # Remove session-document links
+    await db.chat_session_documents.delete_many({"session_id": session_id})
+    
+    # Delete messages
+    await db.chat_messages.delete_many({"session_id": session_id})
+    
+    # Delete session
+    await db.chat_sessions.delete_one({"_id": session_id})
+    
     return {"ok": True}
-
