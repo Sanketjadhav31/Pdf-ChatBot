@@ -8,6 +8,8 @@ type Props = {
   authToken?: string;
 };
 
+const API_BASE = import.meta.env.VITE_API_URL;
+
 export const PdfViewer: React.FC<Props> = ({ documentId, filename, initialPage, onClose, authToken }) => {
   const [isLoading, setIsLoading] = React.useState(true);
   const [pdfUrl, setPdfUrl] = React.useState<string>("");
@@ -19,7 +21,7 @@ export const PdfViewer: React.FC<Props> = ({ documentId, filename, initialPage, 
         setIsLoading(true);
         setError("");
         
-        const response = await fetch(`http://localhost:5000/api/v1/documents/${documentId}/view`, {
+        const response = await fetch(`${API_BASE}/documents/${documentId}/view`, {
           headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
         });
 

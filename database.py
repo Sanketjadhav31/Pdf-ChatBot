@@ -207,7 +207,7 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))+ + timedelta(hours=5, minutes=30)
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)) + timedelta(hours=5, minutes=30)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -260,7 +260,7 @@ async def ensure_embedding_index_metadata(
             "index_name": index_name,
             "embedding_model_name": embedding_model_name,
             "embedding_dimension": embedding_dimension,
-            "created_at": datetime.utcnow()+  timedelta(hours=5, minutes=30),
+            "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
             "updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
         })
         print(

@@ -28,47 +28,6 @@ class InMemoryVectorStore:
         """Add chunks with batch embedding for better performance"""
         if not chunks:
             return
-        
-        # Extract all text content
-        texts = [chunk.content for chunk in chunks]
-        
-        # Batch embed all texts at once (much faster than one-by-one)
-        logger.info(f"Starting batch embedding for {len(texts)} chunks")
-        
-        with PerformanceTimer(logger, f"Batch Embedding ({len(texts)} chunks)"):
-            embeddings = embedding_service.embed_texts(texts)
-        
-        # Add to store
-        for chunk, embedding in zip(chunks, embeddings):
-            self._chunks.append(chunk)
-            self._embeddings.append(embedding)
-        
-        logger.info(f"Successfully embedded {len(chunks)} chunks")
-        logger.info(f"Total chunks in vector store: {self.size}")
-
-    def delete_chunks_by_document(self, document_id: str) -> int:
-        """Delete all chunks belonging to a specific document"""
-        indices_to_keep = []
-        deleted_count = 0
-        
-        for i, chunk in enumerate(self._chunks):
-            if chunk.metadata.document_id == document_id:
-                deleted_count += 1
-            else:
-                indices_to_keep.append(i)
-        
-        # Rebuild the lists without the deleted chunks
-        self._chunks = [self._chunks[i] for i in indices_to_keep]
-        self._embeddings = [self._embeddings[i] for i in indices_to_keep]
-        
-        logger.info(f"Deleted {deleted_count} chunks for document {document_id}")
-        logger.info(f"Remaining chunks in vector store: {self.size}")
-        
-        return deleted_count
-    def add_chunks(self, chunks: List[Chunk]) -> None:
-        """Add chunks with batch embedding for better performance"""
-        if not chunks:
-            return
 
         # Extract all text content
         texts = [chunk.content for chunk in chunks]

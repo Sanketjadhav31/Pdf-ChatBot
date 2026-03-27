@@ -46,8 +46,8 @@ async def register(request: AuthRequest, db = Depends(get_database)) -> TokenRes
         "created_at": None,  # MongoDB will set this with server timestamp
     }
     
-    from datetime import datetime,timedelta
-    user_doc["created_at"] = datetime.utcnow()+ + timedelta(hours=5, minutes=30)
+    from datetime import datetime, timedelta
+    user_doc["created_at"] = datetime.utcnow() + timedelta(hours=5, minutes=30)
     
     await db.users.insert_one(user_doc)
 

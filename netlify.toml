@@ -6,6 +6,15 @@
 [build.environment]
   NODE_VERSION = "18"
 
+[context.production.environment]
+  VITE_API_URL = "https://pdf-chatbot-backend.onrender.com/api/v1"
+
+[context.deploy-preview.environment]
+  VITE_API_URL = "https://pdf-chatbot-backend.onrender.com/api/v1"
+
+[context.branch-deploy.environment]
+  VITE_API_URL = "https://pdf-chatbot-backend.onrender.com/api/v1"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

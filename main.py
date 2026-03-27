@@ -40,13 +40,24 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS – allow local frontend during development
+    # CORS – allow local frontend during development and production
+    import os
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",  # Vite default dev server
+        "http://127.0.0.1:5173",
+        "https://pdfchatbot1.netlify.app",  # Production frontend
+    ]
+    
+    # Add additional frontend URL from environment if specified
+    frontend_url = os.getenv("FRONTEND_URL")
+    if frontend_url and frontend_url not in allowed_origins:
+        allowed_origins.append(frontend_url)
+    
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000"
-        ],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

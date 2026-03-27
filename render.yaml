@@ -20,6 +20,8 @@ services:
         value: 8.8.8.8,8.8.4.4,1.1.1.1
       - key: FORCE_IPV4
         value: true
+      - key: FRONTEND_URL
+        value: https://pdfchatbot1.netlify.app
       - key: GOOGLE_API_KEY
         sync: false
       - key: JWT_SECRET_KEY
