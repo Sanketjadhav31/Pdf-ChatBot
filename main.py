@@ -55,6 +55,8 @@ def create_app() -> FastAPI:
     if frontend_url and frontend_url not in allowed_origins:
         allowed_origins.append(frontend_url)
     
+    print(f"🔒 CORS allowed origins: {allowed_origins}")
+    
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
