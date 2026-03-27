@@ -270,11 +270,37 @@ async def ensure_embedding_index_metadata(
         return
 
     if existing["embedding_dimension"] != embedding_dimension:
-        raise RuntimeError(
-            "Embedding dimension mismatch for index "
-            f"'{index_name}': existing={existing['embedding_dimension']}, "
-            f"current={embedding_dimension}. Recreate the index before startup."
+        print(
+            f"⚠️ Embedding dimension changed for index '{index_name}': "
+            f"existing={existing['embedding_dimension']}, current={embedding_dimension}"
         )
+        print("🔄 Clearing all document embeddings and updating index metadata...")
+        
+        # Clear all embeddings from documents since they're incompatible
+        await database.documents.update_many(
+            {},
+            {
+                "$set": {
+                    "chunks": [],
+                    "updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30)
+                }
+            }
+        )
+        
+        # Update the index metadata with new dimensions
+        await database.embedding_index_metadata.update_one(
+            {"index_name": index_name},
+            {
+                "$set": {
+                    "embedding_model_name": embedding_model_name,
+                    "embedding_dimension": embedding_dimension,
+                    "updated_at": datetime.utcnow() + timedelta(hours=5, minutes=30)
+                }
+            }
+        )
+        
+        print(f"✅ Index metadata updated. Users will need to re-upload their documents.")
+        return
 
     if existing["embedding_model_name"] != embedding_model_name:
         print(
