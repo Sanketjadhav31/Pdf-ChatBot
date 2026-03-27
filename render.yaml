@@ -1,7 +1,7 @@
 services:
   - type: web
     name: pdf-chatbot-backend
-    runtime: docker
+    env: docker
     region: oregon
     plan: starter
     dockerfilePath: ./Dockerfile
