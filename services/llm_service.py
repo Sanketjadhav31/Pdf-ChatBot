@@ -1,6 +1,6 @@
 import os
 from typing import Dict, List, Optional, Tuple
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 from logger_config import setup_logger, PerformanceTimer
 
@@ -16,8 +16,8 @@ class LLMService:
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment variables")
         
-        self.client = genai.Client(api_key=api_key)
-        self.model_name = "gemini-2.5-flash"
+        genai.configure(api_key=api_key)
+        self.model_name = "gemini-2.0-flash-exp"
         logger.info(f"Initialized Google Gemini model: {self.model_name}")
 
     @staticmethod
@@ -149,12 +149,10 @@ User message: "{safe_message}"
 
         try:
             logger.info(f"Classifying message: {safe_message[:80]}...")
-            logger.info(f"History context: {len(history_lines)} messages")
+            logger.info(f"History context: {len(history_block_lines)} messages")
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-            )
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(full_prompt)
 
             raw = (response.text or "").strip()
             logger.debug(f"LLM raw response: {raw[:200]}...")
@@ -310,10 +308,8 @@ Instructions:
 """.strip()
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-            )
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(full_prompt)
             llm_out = (response.text or "").strip()
             if llm_out == raw_message.strip():
                 return raw_message
@@ -343,10 +339,8 @@ Rules:
 User message: "{safe_message}"
 """.strip()
 
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=full_prompt,
-        )
+        model = genai.GenerativeModel(self.model_name)
+        response = model.generate_content(full_prompt)
         return (response.text or "").strip()
     
     async def generate_response(
@@ -467,10 +461,8 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             logger.info(f"Generating PDF answer for query: {prompt[:80]}...")
             logger.info(f"Context length: {len(context)} chars, History: {len(history) if history else 0} msgs")
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-            )
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(full_prompt)
             
             answer = response.text
             answer_text = (answer or "").strip()
