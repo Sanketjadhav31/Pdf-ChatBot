@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: pdf-chatbot-backend
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: USE_OLLAMA
+        value: false
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 60
+      - key: UPLOAD_CONCURRENCY
+        value: 2
+      - key: MAX_PDF_CHUNKS
+        value: 200
+      - key: USE_CUSTOM_DNS
+        value: true
+      - key: DNS_SERVERS
+        value: 8.8.8.8,8.8.4.4,1.1.1.1
+      - key: FORCE_IPV4
+        value: true
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
