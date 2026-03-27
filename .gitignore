@@ -290,7 +290,7 @@ faiss_index/
 chroma_db/
 
 # Model files (if downloading models locally)
-models/
+# models/
 *.bin
 *.onnx
 *.pt
