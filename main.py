@@ -42,29 +42,28 @@ def create_app() -> FastAPI:
     )
 
     # CORS – MUST be added before routes
-    print("🔒 CORS: Allowing all origins for debugging")
+    frontend_url = os.getenv("FRONTEND_URL", "https://pdfchatbot1.netlify.app")
+    print(f"🔒 CORS: Allowing origins: {frontend_url} and all origins")
     
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[frontend_url, "*"],
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
         expose_headers=["*"],
+        max_age=3600,
     )
     
-    # Add explicit OPTIONS handler for all routes
-    @app.options("/{full_path:path}")
-    async def options_handler(request: Request, full_path: str):
-        return Response(
-            status_code=200,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Credentials": "true",
-            }
-        )
+    # Add middleware to handle CORS headers on all responses
+    @app.middleware("http")
+    async def add_cors_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(document_upload_router, prefix="/api/v1")
