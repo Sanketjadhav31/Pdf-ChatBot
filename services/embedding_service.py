@@ -1,7 +1,7 @@
 import os
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,7 +10,7 @@ load_dotenv()
 class EmbeddingService:
    
     KNOWN_DIMENSIONS: dict[str, int] = {
-        "models/gemini-embedding-001": 3072,
+        "models/text-embedding-004": 3072,
         "models/text-embedding-004": 768,
         "text-embedding-3-small": 1536,
         "text-embedding-3-large": 3072,
@@ -22,8 +22,8 @@ class EmbeddingService:
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment variables")
 
-        self.client = genai.Client(api_key=api_key)
-        self.model_name = os.getenv("EMBEDDING_MODEL_NAME", "models/gemini-embedding-001")
+        genai.configure(api_key=api_key)
+        self.model_name = os.getenv("EMBEDDING_MODEL_NAME", "models/text-embedding-004")
         self._dimension: int | None = None
 
         print(f"Initialized Google embedding model: {self.model_name}")
@@ -34,11 +34,11 @@ class EmbeddingService:
     
     def embed_text(self, text: str) -> np.ndarray:
         """Generate embedding for a single text"""
-        result = self.client.models.embed_content(
+        result = genai.embed_content(
             model=self.model_name,
-            contents=text
+            content=text
         )
-        embedding = np.array(result.embeddings[0].values, dtype="float32")
+        embedding = np.array(result['embedding'], dtype="float32")
         return embedding
     
     def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
@@ -56,11 +56,11 @@ class EmbeddingService:
         max_workers = min(4, total)
 
         def _embed_indexed(index: int, text: str) -> tuple[int, np.ndarray]:
-            result = self.client.models.embed_content(
+            result = genai.embed_content(
                 model=self.model_name,
-                contents=text,
+                content=text,
             )
-            embedding = np.array(result.embeddings[0].values, dtype="float32")
+            embedding = np.array(result['embedding'], dtype="float32")
             return index, embedding
 
         print(f"⏳ Processing embeddings with {max_workers} workers...")
@@ -108,11 +108,11 @@ class EmbeddingService:
 
     def _probe_dimension(self) -> int:
         """Probe embedding dimension from real API response."""
-        result = self.client.models.embed_content(
+        result = genai.embed_content(
             model=self.model_name,
-            contents="dimension_probe",
+            content="dimension_probe",
         )
-        vector = result.embeddings[0].values
+        vector = result['embedding']
         return len(vector)
 
 
