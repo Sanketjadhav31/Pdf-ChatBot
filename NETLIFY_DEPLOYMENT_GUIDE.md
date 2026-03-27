@@ -6,7 +6,7 @@
 ```
 Base directory: frontend
 Build command: npm run build
-Publish directory: frontend/dist
+Publish directory: dist
 ```
 
 ### Step 2: Environment Variables
@@ -41,7 +41,7 @@ Once deployed, visit your Netlify URL and test:
 | **Branch** | main |
 | **Base directory** | `frontend` |
 | **Build command** | `npm run build` |
-| **Publish directory** | `frontend/dist` |
+| **Publish directory** | `dist` |
 | **Functions directory** | (leave empty) |
 
 ### Environment Variables
@@ -94,7 +94,7 @@ After deployment, go to:
 **Solution:** Check these in order:
 1. Ensure `Base directory` is set to `frontend`
 2. Verify `Build command` is `npm run build`
-3. Check `Publish directory` is `frontend/dist`
+3. Check `Publish directory` is `dist` (not `frontend/dist`)
 
 ### API Connection Issues
 **Error:** Network errors or CORS issues

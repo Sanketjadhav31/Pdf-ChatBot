@@ -7,7 +7,7 @@
 ```
 Base directory:      frontend
 Build command:       npm run build
-Publish directory:   frontend/dist
+Publish directory:   dist
 Branch:              main
 ```
 
@@ -70,7 +70,7 @@ VITE_API_URL=https://pdf-chatbot-kktm.onrender.com
 ### Build failed?
 ✅ Base directory = `frontend`  
 ✅ Build command = `npm run build`  
-✅ Publish directory = `frontend/dist`
+✅ Publish directory = `dist` (not `frontend/dist`)
 
 ### 404 on refresh?
 ✅ `netlify.toml` file is in root  
