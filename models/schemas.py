@@ -101,6 +101,7 @@ class ChatHistoryItem(BaseModel):
     content: str
     created_at: datetime
     attached_docs: List[DocumentMetadata] = Field(default_factory=list)
+    references: List[Reference] = Field(default_factory=list)
     # Optional per-message scope metadata (used for multi-PDF chats).
     pdf_scope: Optional[PdfScope] = None
 
@@ -117,4 +118,48 @@ class UploadedDocumentItem(BaseModel):
     id: str
     filename: str
     created_at: datetime
+
+
+# Read Mode Schemas
+class TextSelection(BaseModel):
+    selected_text: str
+    page_number: int
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
+
+
+class ReadModeRequest(BaseModel):
+    session_id: Optional[str] = None
+    document_id: str
+    question: str
+    selected_text: Optional[str] = None
+    page_number: int
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
+
+
+class ReadModeResponse(BaseModel):
+    answer: str
+    session_id: str
+
+
+class ReadModeMessage(BaseModel):
+    id: str
+    role: str  # "user" or "assistant"
+    content: str
+    selected_text: Optional[str] = None
+    page_number: Optional[int] = None
+    created_at: datetime
+
+
+class ReadModeHistoryResponse(BaseModel):
+    session_id: str
+    document_id: str
+    messages: List[ReadModeMessage]
+
+
+class PageTextResponse(BaseModel):
+    page_number: int
+    text: str
+    total_pages: int
 

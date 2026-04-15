@@ -94,8 +94,7 @@ backend/tests/
 ### Install Dependencies
 ```bash
 cd backend
-pip install -r requirements.txt
-pip install pytest pytest-cov httpx
+poetry install --with dev
 ```
 
 ### Run All Tests
@@ -173,7 +172,7 @@ Make sure `conftest.py` is in the tests directory and properly configured.
 ### PDF Generation Issues
 If PDF generation fails, install reportlab for better PDF creation:
 ```bash
-pip install reportlab
+poetry add --group dev reportlab
 ```
 
 ## Future Enhancements

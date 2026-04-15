@@ -1,3 +1,7 @@
+/* React-PDF styles - must be imported first */
+@import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
+@import 'react-pdf/dist/esm/Page/TextLayer.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -798,4 +802,27 @@ code {
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 12px;
+}
+
+/* PDF Text Layer - Ensure text is selectable and visible when selected */
+.react-pdf__Page__textContent {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+}
+
+.react-pdf__Page__textContent span {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text !important;
+}
+
+/* Make text selection more visible in PDF */
+.react-pdf__Page__textContent ::selection {
+  background: rgba(99, 102, 241, 0.4) !important;
+}
+
+.react-pdf__Page__textContent ::-moz-selection {
+  background: rgba(99, 102, 241, 0.4) !important;
 }

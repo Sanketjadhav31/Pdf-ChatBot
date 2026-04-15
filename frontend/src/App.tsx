@@ -4,6 +4,8 @@ import { ChatInput } from "./components/ChatInput";
 import { ChatMessage } from "./components/ChatMessage";
 import { Sidebar } from "./components/Sidebar";
 import { PdfViewer } from "./components/PdfViewer";
+import { ReadModeSplitView } from "./components/ReadModeSplitView";
+import { ReadModeSelector } from "./components/ReadModeSelector";
 import { AuthForm } from "./components/AuthForm";
 
 type Message = {
@@ -66,6 +68,12 @@ const App: React.FC = () => {
   const uploadTriggerRef = React.useRef<(() => void) | null>(null);
   const isLoadingRef = React.useRef(false);
   const chatInputRef = React.useRef<HTMLTextAreaElement>(null);
+
+  // Read Mode state
+  const [readModeDoc, setReadModeDoc] = React.useState<UploadedDocument | null>(null);
+  const [readModePdfUrl, setReadModePdfUrl] = React.useState<string>("");
+  const [showReadModeSelector, setShowReadModeSelector] = React.useState(false);
+  const [autoOpenInReadMode, setAutoOpenInReadMode] = React.useState(false);
 
   // Auto-focus chat input when user starts typing anywhere
   React.useEffect(() => {
@@ -209,6 +217,11 @@ const App: React.FC = () => {
       .catch(e => console.error("Failed to fetch user info:", e));
   }, [authToken]);
 
+  // Debug logging for Read Mode state
+  React.useEffect(() => {
+    console.log(`🎨 Rendering - readModeDoc: ${readModeDoc ? 'SET (sidebar hidden)' : 'NULL (sidebar visible)'}`);
+  }, [readModeDoc]);
+
   const handleUploadStart = (filename: string) => {
     console.log(`🚀 Upload started: ${filename}`);
     setUploadingFiles((prev) => {
@@ -244,13 +257,13 @@ const App: React.FC = () => {
     console.log(`✅ Upload completed: ${info.filename}`, info);
     console.log(`📋 Document ID: ${info.documentId}`);
 
-    setUploadedDocs((prev) => {
-      const newDoc: UploadedDocument = {
-        documentId: info.documentId,
-        filename: info.filename,
-        uploadedAt: new Date(),
-      };
+    const newDoc: UploadedDocument = {
+      documentId: info.documentId,
+      filename: info.filename,
+      uploadedAt: new Date(),
+    };
 
+    setUploadedDocs((prev) => {
       console.log(`📝 Adding document to state:`, newDoc);
       console.log(`📚 Previous docs count: ${prev.length}`);
 
@@ -260,16 +273,19 @@ const App: React.FC = () => {
       console.log(`📚 New docs count: ${newDocs.length}`);
       return newDocs;
     });
+    
     // Keep a chat-scoped doc list so each chat only shows its own PDFs.
     setChatDocs((prev) => {
-      const newDoc: UploadedDocument = {
-        documentId: info.documentId,
-        filename: info.filename,
-        uploadedAt: new Date(),
-      };
       const withoutSameId = prev.filter((doc) => doc.documentId !== info.documentId);
       return [...withoutSameId, newDoc];
     });
+
+    // If we're in Read Mode OR the upload was triggered from Read Mode context, automatically open in Read Mode
+    if (readModeDoc || autoOpenInReadMode) {
+      console.log(`🔄 Auto-opening newly uploaded PDF in Read Mode: ${info.filename}`);
+      setAutoOpenInReadMode(false); // Reset the flag
+      handleOpenReadMode(newDoc);
+    }
   };
 
   const handleNewChat = () => {
@@ -309,6 +325,14 @@ const App: React.FC = () => {
         attachedDocs: (m.attached_docs ?? []).map((d: any) => ({
           documentId: d.document_id,
           filename: d.filename,
+        })),
+        references: (m.references ?? []).map((ref: any) => ({
+          documentId: ref.document_id,
+          pageNumber: ref.page_number,
+          documentHeading: ref.document_heading,
+          paragraphHeading: ref.paragraph_heading,
+          snippet: ref.snippet,
+          snippetHover: ref.snippet_hover,
         })),
       }));
       setMessages(loadedMessages);
@@ -404,6 +428,92 @@ const App: React.FC = () => {
     if (doc) {
       setViewingDoc({ ...doc, initialPage: pageNumber });
     }
+  };
+
+  const handleOpenInChat = (doc: UploadedDocument) => {
+    // Close sidebar to show chat
+    setSidebarOpen(false);
+    
+    // Add document to current chat session
+    const docToAttach: AttachedDoc = {
+      documentId: doc.documentId,
+      filename: doc.filename,
+    };
+    
+    // Update chat docs and currently attached docs
+    setChatDocs((prev) => {
+      const exists = prev.some((d) => d.documentId === doc.documentId);
+      if (exists) return prev;
+      return [...prev, doc];
+    });
+    
+    setCurrentlyAttachedDocs((prev) => {
+      const exists = prev.some((d) => d.documentId === doc.documentId);
+      if (exists) return prev;
+      return [...prev, doc];
+    });
+    
+    setLastAttachedDocs((prev) => {
+      const exists = prev?.some((d) => d.documentId === doc.documentId);
+      if (exists) return prev;
+      return prev ? [...prev, docToAttach] : [docToAttach];
+    });
+    
+    // Switch to chat view
+    setViewMode("chat");
+  };
+
+  const handleOpenReadMode = async (doc: UploadedDocument) => {
+    if (!authToken) return;
+    
+    try {
+      console.log(`🔍 Opening Read Mode for document: ${doc.documentId}`);
+      
+      // Clean up previous PDF URL if switching documents
+      if (readModePdfUrl && readModeDoc?.documentId !== doc.documentId) {
+        URL.revokeObjectURL(readModePdfUrl);
+        setReadModePdfUrl("");
+      }
+      
+      // Fetch PDF as blob with proper headers
+      const response = await fetch(`${API_BASE}/documents/${doc.documentId}/view`, {
+        headers: { 
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        console.error(`❌ Failed to fetch PDF: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to load PDF: ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      console.log(`✅ PDF blob received: ${blob.size} bytes, type: ${blob.type}`);
+      
+      // Verify it's a PDF
+      if (!blob.type.includes('pdf') && blob.type !== 'application/octet-stream') {
+        console.error(`❌ Invalid blob type: ${blob.type}`);
+        throw new Error('Invalid PDF file type');
+      }
+      
+      const url = URL.createObjectURL(blob);
+      console.log(`✅ PDF URL created: ${url}`);
+      
+      setReadModePdfUrl(url);
+      setReadModeDoc(doc);
+      console.log(`✅ Read Mode state set for: ${doc.filename}`);
+    } catch (error) {
+      console.error("❌ Error opening Read Mode:", error);
+      alert(`Failed to open document in Read Mode: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleCloseReadMode = () => {
+    if (readModePdfUrl) {
+      URL.revokeObjectURL(readModePdfUrl);
+    }
+    setReadModePdfUrl("");
+    setReadModeDoc(null);
   };
 
 
@@ -514,6 +624,60 @@ const App: React.FC = () => {
     );
   }
 
+  // When in Read Mode, render Sidebar + Read Mode component
+  if (readModeDoc && readModePdfUrl) {
+    return (
+      <div className="flex h-screen app-bg">
+        <PdfUpload
+          variant="hidden"
+          onUploaded={handleUploaded}
+          onUploadStart={handleUploadStart}
+          onUploadProgress={handleUploadProgress}
+          uploadTriggerRef={uploadTriggerRef}
+          authToken={authToken}
+        />
+        <Sidebar
+          isOpen={sidebarOpen}
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+          uploadedDocs={uploadedDocs}
+          onNewChat={handleNewChat}
+          onDeleteDoc={handleDeleteDoc}
+          onViewDoc={handleViewDoc}
+          onOpenReadMode={handleOpenReadMode}
+          onOpenInChat={handleOpenInChat}
+          uploadTriggerRef={uploadTriggerRef}
+          chatSessions={chatSessions}
+          activeSessionId={currentSessionId}
+          onSelectSession={handleSelectSession}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          onDeleteSession={handleDeleteSession}
+          currentUserEmail={currentUserEmail}
+          currentUsername={currentUsername}
+          onLogout={() => {
+            localStorage.removeItem("pdfchat_token");
+            setAuthToken(null);
+            setCurrentUserEmail(null);
+            setCurrentUsername(null);
+            setMessages([]);
+            setUploadedDocs([]);
+            setChatDocs([]);
+            setChatSessions([]);
+          }}
+        />
+        <ReadModeSplitView
+          documentId={readModeDoc.documentId}
+          filename={readModeDoc.filename}
+          pdfUrl={readModePdfUrl}
+          onClose={handleCloseReadMode}
+          authToken={authToken || ""}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen app-bg">
       <PdfUpload
@@ -531,6 +695,8 @@ const App: React.FC = () => {
         onNewChat={handleNewChat}
         onDeleteDoc={handleDeleteDoc}
         onViewDoc={handleViewDoc}
+        onOpenReadMode={handleOpenReadMode}
+        onOpenInChat={handleOpenInChat}
         uploadTriggerRef={uploadTriggerRef}
         chatSessions={chatSessions}
         activeSessionId={currentSessionId}
@@ -552,56 +718,78 @@ const App: React.FC = () => {
         }}
       />
 
-      {viewingDoc && (
-        <PdfViewer
-          documentId={viewingDoc.documentId}
-          filename={viewingDoc.filename}
-          initialPage={viewingDoc.initialPage}
-          onClose={() => setViewingDoc(null)}
-          authToken={authToken || undefined}
-        />
-      )}
+          {viewingDoc && (
+            <PdfViewer
+              documentId={viewingDoc.documentId}
+              filename={viewingDoc.filename}
+              initialPage={viewingDoc.initialPage}
+              onClose={() => setViewingDoc(null)}
+              authToken={authToken || undefined}
+            />
+          )}
 
-      <div className="flex-1 flex flex-col chat-bg">
-        <header className="header-bar px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            {!sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400"
-                aria-label="Open sidebar"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          <div className="flex-1 flex flex-col chat-bg">
+            <header className="header-bar px-6 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {!sidebarOpen && (
+                  <button
+                    onClick={() => setSidebarOpen(true)}
+                    className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400"
+                    aria-label="Open sidebar"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                    </svg>
+                  </button>
+                )}
+                <div>
+                  <h1 className="text-base font-semibold text-slate-50">PDF Chatbot</h1>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowReadModeSelector(true)}
+                  className="relative group px-4 py-2 rounded-lg border border-white/10 text-sm font-medium text-slate-200 hover:bg-white/5 hover:border-indigo-500/50 transition-all"
+                >
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
+                      />
+                    </svg>
+                    <span>Read Mode</span>
+                  </div>
+                  {/* Tooltip */}
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-lg border border-slate-700 z-50">
+                    Read PDFs with AI assistance - select text and ask questions
+                    <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-slate-900"></span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  className="p-2 rounded-lg border border-white/10 text-xs text-slate-200 hover:bg-white/10"
+                >
+                  {theme === "dark" ? "Light" : "Dark"} mode
+                </button>
+                <div className="doc-badge flex items-center gap-2">
+                <svg className="w-4 h-4 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
                 </svg>
-              </button>
-            )}
-            <div>
-              <h1 className="text-base font-semibold text-slate-50">PDF Chatbot</h1>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              className="p-2 rounded-lg border border-white/10 text-xs text-slate-200 hover:bg-white/10"
-            >
-              {theme === "dark" ? "Light" : "Dark"} mode
-            </button>
-            <div className="doc-badge flex items-center gap-2">
-            <svg className="w-4 h-4 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-            </svg>
-            <span className="text-sm font-semibold text-slate-200">{uploadedDocs.length}</span>
-            <span className="text-xs text-slate-400">document{uploadedDocs.length !== 1 ? "s" : ""}</span>
-          </div>
-          </div>
-        </header>
+                <span className="text-sm font-semibold text-slate-200">{uploadedDocs.length}</span>
+                <span className="text-xs text-slate-400">document{uploadedDocs.length !== 1 ? "s" : ""}</span>
+              </div>
+              </div>
+            </header>
 
 
-        <main className="flex-1 flex flex-col overflow-hidden min-h-0">
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 min-h-0">
-            <div className="max-w-3xl mx-auto py-8">
+            <main className="flex-1 flex flex-col overflow-hidden min-h-0">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 min-h-0">
+                <div className="max-w-3xl mx-auto py-8">
               {messages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-center space-y-6 py-12">
                   <div className="w-16 h-16 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
@@ -766,6 +954,18 @@ const App: React.FC = () => {
           </div>
         </main>
       </div>
+
+      {/* Read Mode Selector Modal */}
+      <ReadModeSelector
+        isOpen={showReadModeSelector}
+        onClose={() => setShowReadModeSelector(false)}
+        uploadedDocs={uploadedDocs}
+        onSelectDocument={handleOpenReadMode}
+        onUploadNew={() => {
+          setAutoOpenInReadMode(true);
+          uploadTriggerRef.current?.();
+        }}
+      />
     </div>
   );
 };

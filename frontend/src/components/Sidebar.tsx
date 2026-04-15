@@ -13,6 +13,8 @@ type Props = {
   onNewChat: () => void;
   onDeleteDoc: (documentId: string) => void;
   onViewDoc: (doc: UploadedDocument) => void;
+  onOpenReadMode?: (doc: UploadedDocument) => void;
+  onOpenInChat?: (doc: UploadedDocument) => void;
   uploadTriggerRef?: React.MutableRefObject<(() => void) | null>;
   chatSessions?: { id: string; title: string; timestamp: Date }[];
   activeSessionId?: string | null;
@@ -32,6 +34,8 @@ export const Sidebar: React.FC<Props> = ({
   onNewChat,
   onDeleteDoc,
   onViewDoc,
+  onOpenReadMode,
+  onOpenInChat,
   uploadTriggerRef,
   chatSessions = [],
   activeSessionId,
@@ -208,36 +212,22 @@ export const Sidebar: React.FC<Props> = ({
               {filteredDocs.map((doc) => (
                 <div
                   key={doc.documentId}
-                  className="group flex items-start gap-2 p-3 rounded-lg hover:bg-slate-800 dark:hover:bg-slate-800 [data-theme='light']_&:hover:bg-slate-50 border border-transparent hover:border-slate-700 dark:hover:border-slate-700 [data-theme='light']_&:hover:border-slate-200 transition-all cursor-pointer"
-                  onClick={() => onViewDoc(doc)}
+                  className="group p-3 rounded-lg hover:bg-slate-800 dark:hover:bg-slate-800 [data-theme='light']_&:hover:bg-slate-50 border border-transparent hover:border-slate-700 dark:hover:border-slate-700 [data-theme='light']_&:hover:border-slate-200 transition-all"
                 >
-                  <div className="flex-shrink-0 mt-0.5">
-                    <svg className="w-5 h-5 text-red-400 dark:text-red-400 [data-theme='light']_&:text-red-500" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-200 dark:text-slate-200 [data-theme='light']_&:text-slate-900 truncate" title={doc.filename}>
-                      {doc.filename}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-500 [data-theme='light']_&:text-slate-500 mt-0.5">
-                      {doc.uploadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  </div>
-                  <div className="flex-shrink-0 flex items-center gap-1">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onViewDoc(doc);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-slate-700 dark:hover:bg-slate-700 [data-theme='light']_&:hover:bg-slate-200 rounded transition-all"
-                      aria-label="View document"
-                    >
-                      <svg className="w-4 h-4 text-slate-400 dark:text-slate-400 [data-theme='light']_&:text-slate-600 hover:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  <div className="flex items-start gap-2 mb-2">
+                    <div className="flex-shrink-0 mt-0.5">
+                      <svg className="w-5 h-5 text-red-400 dark:text-red-400 [data-theme='light']_&:text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
                       </svg>
-                    </button>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-200 dark:text-slate-200 [data-theme='light']_&:text-slate-900 truncate" title={doc.filename}>
+                        {doc.filename}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-500 [data-theme='light']_&:text-slate-500 mt-0.5">
+                        {doc.uploadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -250,6 +240,34 @@ export const Sidebar: React.FC<Props> = ({
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                       </svg>
                     </button>
+                  </div>
+                  
+                  {/* Mode Selection Buttons */}
+                  <div className="flex gap-2">
+                    {onOpenReadMode && (
+                      <button
+                        onClick={() => onOpenReadMode(doc)}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 hover:border-indigo-500/40 text-xs font-medium text-indigo-300 transition-colors"
+                        title="Open in Read Mode - Select text and ask questions"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                        </svg>
+                        Read Mode
+                      </button>
+                    )}
+                    {onOpenInChat && (
+                      <button
+                        onClick={() => onOpenInChat(doc)}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 hover:border-purple-500/40 text-xs font-medium text-purple-300 transition-colors"
+                        title="Open in Chat - Ask questions about the whole document"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                        </svg>
+                        Open in Chat
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

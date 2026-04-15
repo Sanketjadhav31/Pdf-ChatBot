@@ -164,6 +164,16 @@ async def create_indexes():
     # Embedding index metadata
     await database.embedding_index_metadata.create_index([("index_name", ASCENDING)], unique=True)
     
+    # Read mode sessions indexes
+    await database.read_mode_sessions.create_index([("user_id", ASCENDING)])
+    await database.read_mode_sessions.create_index([("document_id", ASCENDING)])
+    await database.read_mode_sessions.create_index([("created_at", DESCENDING)])
+    
+    # Read mode messages indexes
+    await database.read_mode_messages.create_index([("session_id", ASCENDING)])
+    await database.read_mode_messages.create_index([("user_id", ASCENDING)])
+    await database.read_mode_messages.create_index([("created_at", DESCENDING)])
+    
     print("✅ Database indexes created")
 
 

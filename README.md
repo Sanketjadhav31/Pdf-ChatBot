@@ -2,6 +2,8 @@
 
 A full-stack intelligent PDF chatbot application that enables natural conversations with your documents using Retrieval-Augmented Generation (RAG). Upload PDFs, ask questions, and receive accurate answers with precise page references.
 
+> **Note**: This project now uses Poetry for dependency management. See [QUICKSTART_POETRY.md](QUICKSTART_POETRY.md) for quick setup or [POETRY_MIGRATION.md](POETRY_MIGRATION.md) for detailed migration guide.
+
 ## Features
 
 - 🔐 **User Authentication** - Secure JWT-based registration and login system
@@ -71,8 +73,14 @@ cd pdf-chatbot-rag
 ### 2. Backend Setup
 
 ```bash
+# Install Poetry (if not already installed)
+curl -sSL https://install.python-poetry.org | python3 -
+
 # Install Python dependencies
-pip install -r requirements.txt
+poetry install
+
+# Activate the virtual environment (optional, Poetry handles this automatically)
+poetry shell
 ```
 
 Create a `.env` file in the project root:
@@ -108,7 +116,10 @@ npm install
 
 ```bash
 # From project root
-uvicorn main:app --reload --port 5000
+poetry run uvicorn main:app --reload --port 5000
+
+# Or use the Poetry script
+poetry run start
 ```
 
 The API will be available at `http://localhost:5000`
@@ -284,7 +295,9 @@ Authorization: Bearer <token>
 ├── uploads/                     # Uploaded PDF storage
 ├── database.py                  # SQLAlchemy models and auth helpers
 ├── main.py                      # FastAPI application entry point
-├── requirements.txt             # Python dependencies
+├── pyproject.toml               # Poetry dependencies and configuration
+├── poetry.lock                  # Poetry lock file (auto-generated)
+├── requirements.txt             # Legacy pip dependencies (deprecated)
 ├── .env                         # Environment configuration
 └── README.md
 ```
@@ -334,17 +347,17 @@ Key parameters in `services/rag_service.py`:
 ### Running Tests
 
 ```bash
-# Install test dependencies
-pip install -r tests/test_requirements.txt
+# Install test dependencies (included in dev group)
+poetry install --with dev
 
 # Run all tests
-pytest
+poetry run pytest
 
 # Run with coverage
-pytest --cov=. --cov-report=html
+poetry run pytest --cov=. --cov-report=html
 
 # Run specific test file
-pytest tests/test_chat_api.py -v
+poetry run pytest tests/test_chat_api.py -v
 ```
 
 ### Frontend Development
@@ -365,14 +378,17 @@ npm run preview
 ### Code Quality
 
 ```bash
-# Format Python code
-black .
+# Format Python code (install black first)
+poetry add --group dev black
+poetry run black .
 
-# Lint Python code
-flake8 .
+# Lint Python code (install flake8 first)
+poetry add --group dev flake8
+poetry run flake8 .
 
-# Type checking
-mypy .
+# Type checking (install mypy first)
+poetry add --group dev mypy
+poetry run mypy .
 ```
 
 ## Usage Guide
@@ -408,7 +424,7 @@ mypy .
 
 **Import errors**
 ```bash
-pip install -r requirements.txt
+poetry install
 ```
 
 **API key errors**

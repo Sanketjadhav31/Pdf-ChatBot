@@ -401,6 +401,7 @@ async def chat(
         "user_id": current_user["_id"],
         "role": "assistant",
         "content": answer,
+        "references": references,
         "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
     }
     await db.chat_messages.insert_many([user_msg, assistant_msg])
@@ -499,6 +500,7 @@ async def get_chat_session(
                     for doc_id in (m.get("document_ids") or [])
                     if doc_id in doc_lookup
                 ],
+                references=m.get("references", []),
             )
             for m in messages
         ],

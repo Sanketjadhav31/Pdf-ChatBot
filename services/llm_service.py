@@ -499,4 +499,57 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             )
 
 
+    async def generate_read_mode_response(
+        self,
+        prompt: str,
+        context: Dict[str, str],
+        username: str = "User",
+    ) -> str:
+        """
+        Generate a response for Read Mode (text selection-based reading).
+        
+        This is different from RAG mode - it uses only the provided context
+        (selected text + page text + history) without any vector search.
+        
+        Args:
+            prompt: User's question
+            context: Dict with 'selected_text', 'page_text', 'history'
+            username: User's name for personalization
+            
+        Returns:
+            Answer string
+        """
+        from services.read_mode_service import read_mode_service
+        
+        full_prompt = read_mode_service.format_read_mode_prompt(
+            question=prompt,
+            context=context,
+            username=username
+        )
+        
+        try:
+            logger.info(f"Generating Read Mode answer for query: {prompt[:80]}...")
+            logger.info(f"Context - Selected: {len(context.get('selected_text', ''))} chars, "
+                       f"Page: {len(context.get('page_text', ''))} chars")
+            
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=full_prompt
+            )
+            
+            answer_text = (response.text or "").strip()
+            
+            logger.info(f"Read Mode answer generated: {len(answer_text)} chars")
+            logger.debug(f"Answer preview: {answer_text[:150]}...")
+            
+            return answer_text
+            
+        except Exception as e:
+            logger.error(f"Gemini API error in Read Mode: {e}", exc_info=True)
+            msg = str(e).lower()
+            if "429" in msg or "resource_exhausted" in msg:
+                return "I'm temporarily rate-limited. Please try again in a few seconds."
+            return "I apologize, but I'm unable to generate a response at the moment. Please try again shortly."
+
+
 llm_service = LLMService()
