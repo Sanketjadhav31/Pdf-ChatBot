@@ -1,8 +1,7 @@
 import os
 import random
 from typing import Dict, List, Optional, Tuple
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from dotenv import load_dotenv
 from logger_config import setup_logger, PerformanceTimer
 
@@ -21,8 +20,8 @@ class LLMService:
         
         # Initialize with first key
         self.current_key_index = 0
-        self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
-        self.model_name = "gemini-2.5-flash"
+        genai.configure(api_key=self.api_keys[self.current_key_index])
+        self.model_name = "gemini-2.0-flash-exp"
         
         logger.info(f"Initialized Google Gemini model: {self.model_name}")
         logger.info(f"Loaded {len(self.api_keys)} API key(s)")
@@ -61,7 +60,7 @@ class LLMService:
         new_key = self.api_keys[self.current_key_index]
         
         try:
-            self.client = genai.Client(api_key=new_key)
+            genai.configure(api_key=new_key)
             logger.info(f"Switched to API key #{self.current_key_index + 1}")
             return True
         except Exception as e:
@@ -81,7 +80,7 @@ class LLMService:
         
         while attempts < max_retries:
             try:
-                return api_call_func(self.client)
+                return api_call_func()
             except Exception as e:
                 error_str = str(e)
                 attempts += 1
@@ -248,11 +247,10 @@ User message: "{safe_message}"
             logger.info(f"History context: {len(history_block_lines)} messages")
             
             # Use retry mechanism for API call
-            def api_call(client):
-                return client.models.generate_content(
-                    model=self.model_name,
-                    contents=full_prompt
-                )
+            def api_call():
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(full_prompt)
+                return response
             
             response = self._make_api_call_with_retry(api_call)
 
@@ -410,11 +408,10 @@ Instructions:
 """.strip()
 
         try:
-            def api_call(client):
-                return client.models.generate_content(
-                    model=self.model_name,
-                    contents=full_prompt
-                )
+            def api_call():
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(full_prompt)
+                return response
             
             response = self._make_api_call_with_retry(api_call)
             llm_out = (response.text or "").strip()
@@ -446,11 +443,10 @@ Rules:
 User message: "{safe_message}"
 """.strip()
 
-        def api_call(client):
-            return client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt
-            )
+        def api_call():
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(full_prompt)
+            return response
         
         response = self._make_api_call_with_retry(api_call)
         return (response.text or "").strip()
@@ -573,11 +569,10 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             logger.info(f"Generating PDF answer for query: {prompt[:80]}...")
             logger.info(f"Context length: {len(context)} chars, History: {len(history) if history else 0} msgs")
             
-            def api_call(client):
-                return client.models.generate_content(
-                    model=self.model_name,
-                    contents=full_prompt
-                )
+            def api_call():
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(full_prompt)
+                return response
             
             response = self._make_api_call_with_retry(api_call)
             
@@ -639,11 +634,10 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             logger.info(f"Context - Selected: {len(context.get('selected_text', ''))} chars, "
                        f"Page: {len(context.get('page_text', ''))} chars")
             
-            def api_call(client):
-                return client.models.generate_content(
-                    model=self.model_name,
-                    contents=full_prompt
-                )
+            def api_call():
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(full_prompt)
+                return response
             
             response = self._make_api_call_with_retry(api_call)
             
