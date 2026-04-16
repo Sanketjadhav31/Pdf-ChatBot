@@ -22,6 +22,7 @@ export const ReadModeSelector: React.FC<Props> = ({
   onUploadNew,
 }) => {
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [loadingDocId, setLoadingDocId] = React.useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -129,27 +130,40 @@ export const ReadModeSelector: React.FC<Props> = ({
               {filteredDocs.map((doc) => (
                 <button
                   key={doc.documentId}
-                  onClick={() => {
-                    onSelectDocument(doc);
-                    onClose();
+                  onClick={async () => {
+                    setLoadingDocId(doc.documentId);
+                    try {
+                      await onSelectDocument(doc);
+                      onClose();
+                    } finally {
+                      setLoadingDocId(null);
+                    }
                   }}
-                  className="w-full flex items-center gap-4 px-6 py-4 hover:bg-slate-800/50 transition-colors text-left group"
+                  disabled={loadingDocId === doc.documentId}
+                  className="w-full flex items-center gap-4 px-6 py-4 hover:bg-slate-800/50 transition-colors text-left group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center group-hover:bg-red-500/20 transition-colors">
-                    <svg className="w-5 h-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
-                      <path
-                        fillRule="evenodd"
-                        d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
-                        clipRule="evenodd"
-                      />
-                    </svg>
+                    {loadingDocId === doc.documentId ? (
+                      <svg className="w-5 h-5 text-red-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                        <path
+                          fillRule="evenodd"
+                          d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-200 truncate group-hover:text-slate-100">
                       {doc.filename}
                     </p>
                     <p className="text-xs text-slate-500">
-                      Uploaded {doc.uploadedAt.toLocaleDateString()}
+                      {loadingDocId === doc.documentId ? "Loading..." : `Uploaded ${doc.uploadedAt.toLocaleDateString()}`}
                     </p>
                   </div>
                   <svg

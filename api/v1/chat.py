@@ -218,6 +218,7 @@ async def chat(
             "session_id": session_id
         }).to_list(length=None)
         effective_document_ids = [link["document_id"] for link in existing_links]
+    
     active_document_ids = session.get("active_document_ids", []) if session else []
     available_docs = []
     if effective_document_ids:
@@ -225,6 +226,7 @@ async def chat(
             "user_id": current_user["_id"],
             "_id": {"$in": effective_document_ids},
         }).to_list(length=None)
+        
         if not active_document_ids:
             # Backfill active scope for old sessions to the most recent linked doc.
             latest_docs = sorted(
@@ -359,31 +361,37 @@ async def chat(
             active_doc_ids=active_document_ids,
         )
 
-        orchestrator_request = request.copy(
-            update={
-                "session_id": session_id,
-                "document_ids": resolved_scope_ids,
-                "question": search_query,
-            }
-        )
-
-        rag_result = chat_orchestrator.handle_chat(orchestrator_request)
-        pdf_context = rag_result["context"]
-
-        if not pdf_context.strip():
+        # Check if we have any valid documents to search
+        if not resolved_scope_ids:
             answer = upload_needed_message
             references = []
             is_relevant = False
         else:
-            answer, is_relevant = await llm_service.generate_response(
-                prompt=request.question,
-                context=pdf_context,
-                username=current_user["username"],
-                history=history,
+            orchestrator_request = request.copy(
+                update={
+                    "session_id": session_id,
+                    "document_ids": resolved_scope_ids,
+                    "question": search_query,
+                }
             )
-            # Show references only for successful, document-grounded answers.
-            # On rate-limit/API-failure/refusal paths, is_relevant is False.
-            references = rag_result["references"] if is_relevant else []
+
+            rag_result = chat_orchestrator.handle_chat(orchestrator_request)
+            pdf_context = rag_result["context"]
+
+            if not pdf_context.strip():
+                answer = upload_needed_message
+                references = []
+                is_relevant = False
+            else:
+                answer, is_relevant = await llm_service.generate_response(
+                    prompt=request.question,
+                    context=pdf_context,
+                    username=current_user["username"],
+                    history=history,
+                )
+                # Show references only for successful, document-grounded answers.
+                # On rate-limit/API-failure/refusal paths, is_relevant is False.
+                references = rag_result["references"] if is_relevant else []
     
     # Persist chat messages
     user_msg = {
@@ -395,13 +403,27 @@ async def chat(
         "document_ids": message_document_ids,
         "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
     }
+    
+    # Convert Reference objects to dicts for MongoDB
+    references_dict = [
+        {
+            "document_id": ref.document_id,
+            "page_number": ref.page_number,
+            "document_heading": ref.document_heading,
+            "paragraph_heading": ref.paragraph_heading,
+            "snippet": ref.snippet if hasattr(ref, 'snippet') else None,
+            "snippet_hover": ref.snippet_hover if hasattr(ref, 'snippet_hover') else None,
+        }
+        for ref in references
+    ]
+    
     assistant_msg = {
         "_id": str(uuid.uuid4()),
         "session_id": session_id,
         "user_id": current_user["_id"],
         "role": "assistant",
         "content": answer,
-        "references": references,
+        "references": references_dict,
         "created_at": datetime.utcnow() + timedelta(hours=5, minutes=30),
     }
     await db.chat_messages.insert_many([user_msg, assistant_msg])

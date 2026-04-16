@@ -28,3 +28,10 @@ EXTRA FEATURES IMPLEMENTED BEYOND ORIGINAL PRD
 27. Session Deletion - Delete individual chat sessions from sidebar
 28. Document Deletion - Remove uploaded PDFs with automatic vector store cleanup
 29. Logout Functionality - Clear auth token and reset application state
+30. Read Mode Feature - Interactive PDF reading with text selection and contextual chat
+31. Text Selection Popup - Highlight PDF text to get instant explanations, summaries, or ask questions
+32. Split View Layout - Side-by-side PDF viewer and chat interface for seamless reading experience
+33. Read Mode Chat - Dedicated chat interface that uses selected text as context for queries
+34. Read Mode PDF Viewer - Enhanced PDF viewer with text selection capabilities using PDF.js
+35. Mode Selector - Toggle between standard chat mode and read mode for different workflows
+36. Context-Aware Queries - Automatically includes selected PDF text in chat queries for precise answers

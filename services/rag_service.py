@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import math
 import os
+import pickle
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+import faiss
 import numpy as np
 
 from models.schemas import ChatRequest, Chunk, Reference
@@ -15,24 +18,78 @@ from logger_config import setup_logger, PerformanceTimer, log_step
 logger = setup_logger(__name__)
 
 
-class InMemoryVectorStore:
-    def __init__(self) -> None:
+class FAISSVectorStore:
+    """FAISS-based vector store with disk persistence"""
+    
+    def __init__(self, persist_directory: str = "vector_store_data") -> None:
         self._chunks: List[Chunk] = []
-        self._embeddings: List[np.ndarray] = []
+        self._persist_dir = Path(persist_directory)
+        self._persist_dir.mkdir(exist_ok=True)
+        
+        self._index_path = self._persist_dir / "faiss.index"
+        self._chunks_path = self._persist_dir / "chunks.pkl"
+        
+        # Initialize FAISS index
+        dimension = embedding_service.dimension
+        self._index = faiss.IndexFlatIP(dimension)  # Inner Product (cosine similarity)
+        
+        # Load existing data if available
+        self._load_from_disk()
 
     @property
     def size(self) -> int:
         return len(self._chunks)
 
+    def _load_from_disk(self) -> None:
+        """Load FAISS index and chunks from disk"""
+        try:
+            if self._index_path.exists() and self._chunks_path.exists():
+                logger.info(f"📂 Loading vector store from disk: {self._persist_dir}")
+                
+                # Load FAISS index
+                self._index = faiss.read_index(str(self._index_path))
+                
+                # Load chunks
+                with open(self._chunks_path, 'rb') as f:
+                    self._chunks = pickle.load(f)
+                
+                logger.info(f"✅ Loaded {len(self._chunks)} chunks from disk")
+                logger.info(f"📊 FAISS index size: {self._index.ntotal} vectors")
+            else:
+                logger.info("📂 No existing vector store found, starting fresh")
+        except Exception as e:
+            logger.error(f"❌ Failed to load vector store from disk: {e}")
+            logger.info("🔄 Starting with empty vector store")
+            # Reset to empty state
+            dimension = embedding_service.dimension
+            self._index = faiss.IndexFlatIP(dimension)
+            self._chunks = []
+
+    def _save_to_disk(self) -> None:
+        """Save FAISS index and chunks to disk"""
+        try:
+            logger.info(f"💾 Saving vector store to disk: {self._persist_dir}")
+            
+            # Save FAISS index
+            faiss.write_index(self._index, str(self._index_path))
+            
+            # Save chunks
+            with open(self._chunks_path, 'wb') as f:
+                pickle.dump(self._chunks, f)
+            
+            logger.info(f"✅ Saved {len(self._chunks)} chunks to disk")
+        except Exception as e:
+            logger.error(f"❌ Failed to save vector store to disk: {e}")
+
     def add_chunks(self, chunks: List[Chunk]) -> None:
-        """Add chunks with batch embedding for better performance"""
+        """Add chunks with batch embedding and persist to disk"""
         if not chunks:
             return
 
         # Extract all text content
         texts = [chunk.content for chunk in chunks]
 
-        # Batch embed all texts at once (much faster than one-by-one)
+        # Batch embed all texts at once
         print(f"\n{'='*60}")
         print(f"📊 EMBEDDING PROGRESS")
         print(f"{'='*60}")
@@ -41,38 +98,76 @@ class InMemoryVectorStore:
 
         embeddings = embedding_service.embed_texts(texts)
 
-        # Add to store
-        for chunk, embedding in zip(chunks, embeddings):
-            self._chunks.append(chunk)
-            self._embeddings.append(embedding)
+        # Normalize embeddings for cosine similarity (required for IndexFlatIP)
+        embeddings_array = np.array(embeddings, dtype=np.float32)
+        faiss.normalize_L2(embeddings_array)
+
+        # Add to FAISS index
+        self._index.add(embeddings_array)
+        
+        # Add chunks to list
+        self._chunks.extend(chunks)
 
         print(f"✅ Successfully embedded {len(chunks)} chunks")
         print(f"📚 Total chunks in vector store: {self.size}")
         print(f"{'='*60}\n")
 
+        # Persist to disk
+        self._save_to_disk()
+
+    def has_document(self, document_id: str) -> bool:
+        """Check if a document has any chunks in the vector store"""
+        for chunk in self._chunks:
+            if chunk.metadata.document_id == document_id:
+                return True
+        return False
+
     def delete_chunks_by_document(self, document_id: str) -> int:
         """Delete all chunks belonging to a specific document"""
         indices_to_keep = []
+        indices_to_delete = []
         deleted_count = 0
 
         for i, chunk in enumerate(self._chunks):
             if chunk.metadata.document_id == document_id:
                 deleted_count += 1
+                indices_to_delete.append(i)
             else:
                 indices_to_keep.append(i)
 
-        # Rebuild the lists without the deleted chunks
+        if deleted_count == 0:
+            return 0
+
+        # Rebuild the chunks list
         self._chunks = [self._chunks[i] for i in indices_to_keep]
-        self._embeddings = [self._embeddings[i] for i in indices_to_keep]
+
+        # Rebuild FAISS index (FAISS doesn't support deletion, so we rebuild)
+        dimension = embedding_service.dimension
+        self._index = faiss.IndexFlatIP(dimension)
+        
+        if self._chunks:
+            # Re-embed remaining chunks
+            texts = [chunk.content for chunk in self._chunks]
+            embeddings = embedding_service.embed_texts(texts)
+            embeddings_array = np.array(embeddings, dtype=np.float32)
+            faiss.normalize_L2(embeddings_array)
+            self._index.add(embeddings_array)
 
         print(f"🗑️  Deleted {deleted_count} chunks for document {document_id}")
         print(f"📚 Remaining chunks in vector store: {self.size}")
 
+        # Persist changes to disk
+        self._save_to_disk()
+
         return deleted_count
 
     def embed_text(self, text: str) -> np.ndarray:
-        # Use real embedding service
-        return embedding_service.embed_text(text)
+        """Embed a single text query"""
+        embedding = embedding_service.embed_text(text)
+        # Normalize for cosine similarity
+        embedding_array = np.array([embedding], dtype=np.float32)
+        faiss.normalize_L2(embedding_array)
+        return embedding_array[0]
 
     def search(
         self,
@@ -85,29 +180,35 @@ class InMemoryVectorStore:
             return []
 
         with PerformanceTimer(logger, f"Vector Search (query: '{query[:50]}...')"):
+            # Embed query
             query_vec = self.embed_text(query)
-            mat = np.stack(self._embeddings, axis=0)
+            query_vec = query_vec.reshape(1, -1)
 
-            dot = mat @ query_vec
-            mat_norm = np.linalg.norm(mat, axis=1)
-            query_norm = float(np.linalg.norm(query_vec))
-
-            # Avoid division by zero
-            denom = mat_norm * query_norm + 1e-8
-            cosine_sim = dot / denom
-
-            # Get top_k results sorted by similarity
-            top_indices = np.argsort(-cosine_sim)[:top_k]
+            # Search FAISS index
+            # Get more results than needed for filtering
+            search_k = min(top_k * 3, len(self._chunks))
+            distances, indices = self._index.search(query_vec, search_k)
 
             results: List[Tuple[Chunk, float]] = []
-            for idx in top_indices:
-                score = float(cosine_sim[idx])
+            for idx, score in zip(indices[0], distances[0]):
+                if idx == -1:  # FAISS returns -1 for empty slots
+                    continue
+                    
+                score = float(score)
                 if score < similarity_threshold:
                     continue
+                    
                 chunk = self._chunks[int(idx)]
+                
+                # Filter by document_ids if specified
                 if document_ids is not None and chunk.metadata.document_id not in document_ids:
                     continue
+                    
                 results.append((chunk, score))
+                
+                # Stop once we have enough results
+                if len(results) >= top_k:
+                    break
 
             logger.info(f"Vector search complete: {len(results)} results (threshold={similarity_threshold})")
             if results:
@@ -117,7 +218,7 @@ class InMemoryVectorStore:
 
 
 class ChatOrchestrator:
-    def __init__(self, store: InMemoryVectorStore) -> None:
+    def __init__(self, store: FAISSVectorStore) -> None:
         self._store = store
         self._sessions: Dict[str, List[str]] = {}
 
@@ -283,6 +384,7 @@ class ChatOrchestrator:
         }
 
 
-vector_store = InMemoryVectorStore()
+# Use FAISS vector store with persistence
+vector_store = FAISSVectorStore(persist_directory="vector_store_data")
 chat_orchestrator = ChatOrchestrator(vector_store)
 

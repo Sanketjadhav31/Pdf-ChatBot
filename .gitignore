@@ -285,6 +285,7 @@ documents/
 vector_db/
 faiss_index/
 chroma_db/
+vector_store_data/
 
 # Model files (if downloading models locally)
 # models/

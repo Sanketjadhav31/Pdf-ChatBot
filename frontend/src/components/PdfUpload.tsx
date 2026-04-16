@@ -112,8 +112,19 @@ export const PdfUpload: React.FC<Props> = ({
       onUploadProgress?.(file.name, -1);
     } catch (error: any) {
       console.error(`❌ Upload failed:`, error);
-      const message = error?.message || `Failed to upload ${file.name}. Please try again.`;
-      alert(message);
+      
+      // Extract meaningful error message
+      let message = error?.message || `Failed to upload ${file.name}. Please try again.`;
+      
+      // Format multi-line error messages for better display
+      if (message.includes('\n')) {
+        // For multi-line messages (like image-based PDF errors), show in alert with proper formatting
+        alert(`Upload Failed\n\n${message}`);
+      } else {
+        // For single-line messages, show as-is
+        alert(message);
+      }
+      
       // Remove from uploading list on error
       onUploadProgress?.(file.name, -1);
     }

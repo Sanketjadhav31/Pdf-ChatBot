@@ -7,6 +7,7 @@ import { PdfViewer } from "./components/PdfViewer";
 import { ReadModeSplitView } from "./components/ReadModeSplitView";
 import { ReadModeSelector } from "./components/ReadModeSelector";
 import { AuthForm } from "./components/AuthForm";
+import { ToastContainer } from "./components/Toast";
 
 type Message = {
   id: string;
@@ -41,6 +42,12 @@ type ChatSession = {
   sessionId: string | null;
 };
 
+type Toast = {
+  id: string;
+  message: string;
+  type: "success" | "error" | "info" | "warning";
+};
+
 const API_BASE = import.meta.env.VITE_API_URL;
 
 const App: React.FC = () => {
@@ -69,11 +76,25 @@ const App: React.FC = () => {
   const isLoadingRef = React.useRef(false);
   const chatInputRef = React.useRef<HTMLTextAreaElement>(null);
 
+  // Toast notifications state
+  const [toasts, setToasts] = React.useState<Toast[]>([]);
+
   // Read Mode state
   const [readModeDoc, setReadModeDoc] = React.useState<UploadedDocument | null>(null);
   const [readModePdfUrl, setReadModePdfUrl] = React.useState<string>("");
   const [showReadModeSelector, setShowReadModeSelector] = React.useState(false);
   const [autoOpenInReadMode, setAutoOpenInReadMode] = React.useState(false);
+  const [isLoadingReadMode, setIsLoadingReadMode] = React.useState(false);
+
+  // Toast helper functions
+  const showToast = (message: string, type: "success" | "error" | "info" | "warning" = "success") => {
+    const id = `toast-${Date.now()}`;
+    setToasts((prev) => [...prev, { id, message, type }]);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  };
 
   // Auto-focus chat input when user starts typing anywhere
   React.useEffect(() => {
@@ -430,9 +451,58 @@ const App: React.FC = () => {
     }
   };
 
-  const handleOpenInChat = (doc: UploadedDocument) => {
-    // Close sidebar to show chat
-    setSidebarOpen(false);
+  const handleOpenInChat = async (doc: UploadedDocument) => {
+    console.log(`📎 Opening document in chat: ${doc.filename} (${doc.documentId})`);
+    
+    // Close Read Mode if it's open
+    if (readModeDoc) {
+      console.log(`🔄 Closing Read Mode to switch to chat`);
+      handleCloseReadMode();
+    }
+    
+    // Check if document needs processing by calling backend
+    try {
+      const response = await fetch(`${API_BASE}/documents/${doc.documentId}/status`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      
+      if (response.ok) {
+        const status = await response.json();
+        
+        if (!status.has_chunks) {
+          // Document needs processing - trigger the same workflow as upload
+          console.log(`⚠️ Document ${doc.filename} needs processing`);
+          
+          // Show processing toast
+          showToast(`Processing ${doc.filename}...`, "info");
+          
+          // Trigger processing
+          const processResponse = await fetch(`${API_BASE}/documents/${doc.documentId}/process`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${authToken}` },
+          });
+          
+          if (!processResponse.ok) {
+            const errorData = await processResponse.json();
+            const errorMessage = errorData.detail || 'Failed to process document';
+            
+            // Show error toast
+            showToast(`Error: ${errorMessage}`, "error");
+            
+            console.error('Failed to process document:', errorMessage);
+            return; // Don't add document to chat if processing failed
+          }
+          
+          console.log(`✅ Document ${doc.filename} processed successfully`);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking/processing document:', error);
+      
+      // Show error toast
+      showToast(`Error processing ${doc.filename}. Please try again.`, "error");
+      return; // Don't add document to chat if there was an error
+    }
     
     // Add document to current chat session
     const docToAttach: AttachedDoc = {
@@ -443,7 +513,11 @@ const App: React.FC = () => {
     // Update chat docs and currently attached docs
     setChatDocs((prev) => {
       const exists = prev.some((d) => d.documentId === doc.documentId);
-      if (exists) return prev;
+      if (exists) {
+        console.log(`📎 Document already in chat: ${doc.filename}`);
+        return prev;
+      }
+      console.log(`📎 Adding document to chat: ${doc.filename}`);
       return [...prev, doc];
     });
     
@@ -459,12 +533,19 @@ const App: React.FC = () => {
       return prev ? [...prev, docToAttach] : [docToAttach];
     });
     
+    // Show success toast instead of chat message
+    showToast(`📄 ${doc.filename} is ready! You can now ask questions about it.`, "success");
+    
     // Switch to chat view
     setViewMode("chat");
+    
+    console.log(`✅ Document successfully opened in chat: ${doc.filename}`);
   };
 
   const handleOpenReadMode = async (doc: UploadedDocument) => {
     if (!authToken) return;
+    
+    setIsLoadingReadMode(true);
     
     try {
       console.log(`🔍 Opening Read Mode for document: ${doc.documentId}`);
@@ -505,6 +586,8 @@ const App: React.FC = () => {
     } catch (error) {
       console.error("❌ Error opening Read Mode:", error);
       alert(`Failed to open document in Read Mode: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsLoadingReadMode(false);
     }
   };
 
@@ -619,6 +702,26 @@ const App: React.FC = () => {
               localStorage.setItem("pdfchat_token", token);
             }}
           />
+        </div>
+      </div>
+    );
+  }
+
+  // Loading overlay for Read Mode
+  if (isLoadingReadMode) {
+    return (
+      <div className="flex h-screen items-center justify-center app-bg">
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 mx-auto">
+            <svg className="animate-spin text-indigo-500" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-semibold text-slate-100">Opening Read Mode</h2>
+            <p className="text-slate-400">Loading your PDF document...</p>
+          </div>
         </div>
       </div>
     );
@@ -966,6 +1069,9 @@ const App: React.FC = () => {
           uploadTriggerRef.current?.();
         }}
       />
+
+      {/* Toast Notifications */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );
 };

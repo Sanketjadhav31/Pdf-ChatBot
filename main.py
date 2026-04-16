@@ -24,6 +24,66 @@ async def lifespan(app: FastAPI):
         embedding_model_name=embedding_service.model_name,
         embedding_dimension=embedding_service.dimension,
     )
+    
+    # Reload vector store from database on startup
+    print("🔄 Checking vector store status...")
+    try:
+        from database import database, get_gridfs
+        from services.rag_service import vector_store
+        from services.pdf_loader import extract_chunks_from_pdf
+        
+        # Check if FAISS already has data loaded from disk
+        if vector_store.size > 0:
+            print(f"✅ Vector store already loaded from disk: {vector_store.size} chunks")
+            print("⚡ Skipping database reload (FAISS persistence active)")
+        elif database is None:
+            print("⚠️  Database not initialized, skipping vector store reload")
+        else:
+            print("📂 Vector store empty, reloading from database...")
+            docs = await database.uploaded_documents.find({}).to_list(length=None)
+            
+            if not docs:
+                print("✅ No documents to reload")
+            else:
+                print(f"📚 Found {len(docs)} documents in database")
+                gridfs = get_gridfs()
+                reloaded_count = 0
+                
+                for doc in docs:
+                    doc_id = doc["_id"]
+                    filename = doc.get("filename", "unknown")
+                    gridfs_file_id = doc.get("gridfs_file_id")
+                    
+                    if not gridfs_file_id:
+                        print(f"   ⚠️  Skipping {filename}: No GridFS file ID")
+                        continue
+                    
+                    try:
+                        # Download PDF from GridFS
+                        from bson import ObjectId
+                        grid_out = await gridfs.open_download_stream(ObjectId(gridfs_file_id))
+                        file_data = await grid_out.read()
+                        
+                        # Extract chunks
+                        chunks = extract_chunks_from_pdf(
+                            document_id=doc_id,
+                            filename=filename,
+                            file_bytes=file_data,
+                        )
+                        
+                        # Add to vector store
+                        vector_store.add_chunks(chunks)
+                        reloaded_count += 1
+                        print(f"   ✅ Reloaded: {filename} ({len(chunks)} chunks)")
+                        
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to reload {filename}: {e}")
+                
+                print(f"✅ Reloaded {reloaded_count}/{len(docs)} documents into vector store")
+                print(f"📊 Total chunks in vector store: {vector_store.size}")
+    except Exception as e:
+        print(f"⚠️  Failed to check/reload vector store: {e}")
+    
     print("✅ Application startup complete")
     
     yield

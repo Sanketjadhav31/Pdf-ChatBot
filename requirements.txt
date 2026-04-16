@@ -18,3 +18,4 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 dnspython==2.7.0
 bcrypt==4.2.1
+faiss-cpu
