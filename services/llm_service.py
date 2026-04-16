@@ -1,4 +1,5 @@
 import os
+import random
 from typing import Dict, List, Optional, Tuple
 from google import genai
 from google.genai import types
@@ -10,17 +11,110 @@ load_dotenv()
 logger = setup_logger(__name__)
 
 class LLMService:
-    """Service to handle LLM calls with Google Gemini"""
+    """Service to handle LLM calls with Google Gemini with multiple API key support"""
     
     def __init__(self):
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY not found in environment variables")
+        # Load all available Google API keys
+        self.api_keys = self._load_api_keys()
+        if not self.api_keys:
+            raise ValueError("No GOOGLE_API_KEY found in environment variables")
         
-        self.client = genai.Client(api_key=api_key)
-        # Use gemini-1.5-flash which is available in the API
+        # Initialize with first key
+        self.current_key_index = 0
+        self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
         self.model_name = "gemini-2.5-flash"
+        
         logger.info(f"Initialized Google Gemini model: {self.model_name}")
+        logger.info(f"Loaded {len(self.api_keys)} API key(s)")
+    
+    def _load_api_keys(self) -> List[str]:
+        """Load all GOOGLE_API_KEY, GOOGLE_API_KEY1, GOOGLE_API_KEY2, etc."""
+        keys = []
+        
+        # Try GOOGLE_API_KEY first
+        main_key = os.getenv("GOOGLE_API_KEY")
+        if main_key:
+            keys.append(main_key)
+        
+        # Try numbered keys (GOOGLE_API_KEY1, GOOGLE_API_KEY2, etc.)
+        i = 1
+        while True:
+            key = os.getenv(f"GOOGLE_API_KEY{i}")
+            if not key:
+                break
+            keys.append(key)
+            i += 1
+        
+        return keys
+    
+    def _get_random_api_key(self) -> str:
+        """Get a random API key from available keys"""
+        return random.choice(self.api_keys)
+    
+    def _switch_to_next_key(self) -> bool:
+        """Switch to next available API key. Returns True if switched, False if no more keys."""
+        if len(self.api_keys) <= 1:
+            return False
+        
+        # Try next key
+        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        new_key = self.api_keys[self.current_key_index]
+        
+        try:
+            self.client = genai.Client(api_key=new_key)
+            logger.info(f"Switched to API key #{self.current_key_index + 1}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to switch API key: {e}")
+            return False
+    
+    def _make_api_call_with_retry(self, api_call_func, max_retries: int = None):
+        """
+        Make an API call with automatic retry on quota/rate limit errors.
+        Tries all available API keys before giving up.
+        """
+        if max_retries is None:
+            max_retries = len(self.api_keys)
+        
+        last_error = None
+        attempts = 0
+        
+        while attempts < max_retries:
+            try:
+                return api_call_func(self.client)
+            except Exception as e:
+                error_str = str(e)
+                attempts += 1
+                
+                # Check if it's a quota/rate limit error
+                is_quota_error = any(keyword in error_str for keyword in [
+                    "RESOURCE_EXHAUSTED",
+                    "429",
+                    "quota",
+                    "rate limit",
+                    "Too Many Requests"
+                ])
+                
+                is_unavailable = "503" in error_str or "UNAVAILABLE" in error_str
+                
+                if (is_quota_error or is_unavailable) and attempts < max_retries:
+                    logger.warning(f"API key #{self.current_key_index + 1} quota/limit reached, trying next key...")
+                    if self._switch_to_next_key():
+                        continue
+                    else:
+                        logger.error("No more API keys available to try")
+                        last_error = e
+                        break
+                else:
+                    # Not a quota error or no more retries
+                    last_error = e
+                    break
+        
+        # If we get here, all retries failed
+        if last_error:
+            raise last_error
+        else:
+            raise Exception("API call failed after all retries")
 
     @staticmethod
     def _first_name_from_username(username: str) -> str:
@@ -153,10 +247,14 @@ User message: "{safe_message}"
             logger.info(f"Classifying message: {safe_message[:80]}...")
             logger.info(f"History context: {len(history_block_lines)} messages")
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt
-            )
+            # Use retry mechanism for API call
+            def api_call(client):
+                return client.models.generate_content(
+                    model=self.model_name,
+                    contents=full_prompt
+                )
+            
+            response = self._make_api_call_with_retry(api_call)
 
             raw = (response.text or "").strip()
             logger.debug(f"LLM raw response: {raw[:200]}...")
@@ -312,10 +410,13 @@ Instructions:
 """.strip()
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt
-            )
+            def api_call(client):
+                return client.models.generate_content(
+                    model=self.model_name,
+                    contents=full_prompt
+                )
+            
+            response = self._make_api_call_with_retry(api_call)
             llm_out = (response.text or "").strip()
             if llm_out == raw_message.strip():
                 return raw_message
@@ -345,10 +446,13 @@ Rules:
 User message: "{safe_message}"
 """.strip()
 
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=full_prompt
-        )
+        def api_call(client):
+            return client.models.generate_content(
+                model=self.model_name,
+                contents=full_prompt
+            )
+        
+        response = self._make_api_call_with_retry(api_call)
         return (response.text or "").strip()
     
     async def generate_response(
@@ -469,10 +573,13 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             logger.info(f"Generating PDF answer for query: {prompt[:80]}...")
             logger.info(f"Context length: {len(context)} chars, History: {len(history) if history else 0} msgs")
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt
-            )
+            def api_call(client):
+                return client.models.generate_content(
+                    model=self.model_name,
+                    contents=full_prompt
+                )
+            
+            response = self._make_api_call_with_retry(api_call)
             
             answer = response.text
             answer_text = (answer or "").strip()
@@ -532,10 +639,13 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             logger.info(f"Context - Selected: {len(context.get('selected_text', ''))} chars, "
                        f"Page: {len(context.get('page_text', ''))} chars")
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt
-            )
+            def api_call(client):
+                return client.models.generate_content(
+                    model=self.model_name,
+                    contents=full_prompt
+                )
+            
+            response = self._make_api_call_with_retry(api_call)
             
             answer_text = (response.text or "").strip()
             
