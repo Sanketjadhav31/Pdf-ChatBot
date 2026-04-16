@@ -21,7 +21,8 @@ class LLMService:
         # Initialize with first key
         self.current_key_index = 0
         genai.configure(api_key=self.api_keys[self.current_key_index])
-        self.model_name = "gemini-2.0-flash-exp"
+        # Use stable Gemini model
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         
         logger.info(f"Initialized Google Gemini model: {self.model_name}")
         logger.info(f"Loaded {len(self.api_keys)} API key(s)")
