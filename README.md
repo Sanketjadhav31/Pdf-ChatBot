@@ -26,6 +26,7 @@ A full-stack intelligent PDF chatbot application that enables natural conversati
 - **SQLAlchemy** - SQL toolkit and ORM for database management
 - **SQLite/MySQL/PostgreSQL** - Flexible database support
 - **Google Generative AI** - Gemini 2.5 Flash for LLM and embeddings
+- **FAISS / Qdrant** - Vector database for semantic search (switchable)
 - **PyPDF2** - PDF text extraction
 - **NumPy** - Efficient vector operations and similarity calculations
 - **JWT (python-jose)** - Secure token-based authentication
@@ -42,11 +43,28 @@ A full-stack intelligent PDF chatbot application that enables natural conversati
 ### RAG Pipeline
 1. **Document Processing**: PDFs are chunked into semantic segments with metadata
 2. **Embedding Generation**: Text chunks are converted to 3072-dimensional vectors using Google's embedding model
-3. **Vector Storage**: In-memory vector store with cosine similarity search
+3. **Vector Storage**: FAISS (default) or Qdrant vector database with cosine similarity search
 4. **Query Processing**: User questions are embedded and matched against document chunks
 5. **Context Retrieval**: Top-k most relevant chunks are retrieved (with similarity threshold)
 6. **Answer Generation**: Google Gemini generates responses based on retrieved context
 7. **Reference Tracking**: Page numbers and document metadata are preserved for citations
+
+### Vector Database Options
+
+The application supports two vector database backends:
+
+- **FAISS** (default): Fast, in-memory vector search with file persistence
+  - Best for: Development, small to medium datasets
+  - Setup: No additional dependencies
+  - Storage: Local files (`vector_store_data/`)
+
+- **Qdrant**: Production-grade vector database with Docker
+  - Best for: Production, large datasets, advanced filtering
+  - Setup: Requires Docker
+  - Storage: Persistent Docker volume
+  - Features: Web UI, real-time updates, efficient deletion
+
+Switch between them using the `USE_QDRANT` environment variable. See [QDRANT_SETUP.md](QDRANT_SETUP.md) for details.
 
 ### Database Schema
 - **Users**: Authentication and user management
@@ -60,6 +78,7 @@ A full-stack intelligent PDF chatbot application that enables natural conversati
 - Node.js 16+
 - npm or yarn
 - Google AI API Key (for embeddings and LLM)
+- Docker (optional, required only for Qdrant vector database)
 
 ## Installation
 
@@ -101,7 +120,36 @@ DATABASE_URL=sqlite:///./pdf_chatbot.db
 
 # For PostgreSQL (optional)
 # DATABASE_URL=postgresql://username:password@localhost:5432/pdf_chatbot
+
+# Vector Database Configuration
+# Use FAISS (default, no Docker required)
+USE_QDRANT=false
+
+# Or use Qdrant (requires Docker)
+# USE_QDRANT=true
+# QDRANT_URL=http://localhost:6333
+# QDRANT_COLLECTION=pdf_chunks
 ```
+
+### Optional: Setup Qdrant (for production or large datasets)
+
+If you want to use Qdrant instead of FAISS:
+
+```bash
+# Start Qdrant with Docker Compose
+docker-compose -f docker-compose.qdrant.yml up -d
+
+# Or use the helper script
+# Windows PowerShell:
+.\start-qdrant.ps1
+# Linux/Mac:
+./start-qdrant.sh
+
+# Update .env
+USE_QDRANT=true
+```
+
+See [QDRANT_SETUP.md](QDRANT_SETUP.md) for detailed instructions.
 
 ### 3. Frontend Setup
 
@@ -312,6 +360,9 @@ Authorization: Bearer <token>
 | `JWT_SECRET_KEY` | Secret key for JWT token signing | - | Yes |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT token expiration time | 60 | No |
 | `DATABASE_URL` | Database connection string | `sqlite:///./pdf_chatbot.db` | No |
+| `USE_QDRANT` | Use Qdrant instead of FAISS | `false` | No |
+| `QDRANT_URL` | Qdrant server URL | `http://localhost:6333` | No |
+| `QDRANT_COLLECTION` | Qdrant collection name | `pdf_chunks` | No |
 
 ### Database Options
 

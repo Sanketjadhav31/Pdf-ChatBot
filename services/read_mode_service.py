@@ -26,17 +26,7 @@ class ReadModeService:
         gridfs_file_id: str,
         page_number: int
     ) -> tuple[str, int]:
-        """
-        Extract text from a specific page of a PDF stored in GridFS.
-        
-        Args:
-            gridfs: GridFS bucket instance
-            gridfs_file_id: GridFS file ID
-            page_number: Page number (1-indexed)
-            
-        Returns:
-            Tuple of (page_text, total_pages)
-        """
+        """Extract text from specific PDF page stored in GridFS, returns (text, total_pages)"""
         try:
             # Download PDF from GridFS
             grid_out = await gridfs.open_download_stream(ObjectId(gridfs_file_id))
@@ -67,21 +57,7 @@ class ReadModeService:
         history: List[Dict[str, str]],
         max_history_turns: int = 3
     ) -> Dict[str, str]:
-        """
-        Build the 3-layer context for Read Mode:
-        1. Selected text (highest priority)
-        2. Page context (supporting layer)
-        3. Conversation history (continuity layer)
-        
-        Args:
-            selected_text: Text the user highlighted
-            page_text: Full text of the current page
-            history: Recent conversation messages
-            max_history_turns: Maximum number of conversation turns to include
-            
-        Returns:
-            Dictionary with context layers
-        """
+        """Build 3-layer context: selected text (priority), page text (support), conversation history"""
         # Layer 1: Selected text
         selection_context = selected_text.strip() if selected_text else ""
         
@@ -115,12 +91,7 @@ class ReadModeService:
         context: Dict[str, str],
         username: str = "User"
     ) -> str:
-        """
-        Format the Read Mode prompt for the LLM.
-        
-        This prompt enforces strict adherence to the provided context
-        and prevents the LLM from using external knowledge.
-        """
+        """Format LLM prompt for Read Mode with strict context adherence rules"""
         first_name = username.strip().split()[0] if username.strip() else "User"
         
         selected_text_block = ""

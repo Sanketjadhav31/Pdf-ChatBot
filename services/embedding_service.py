@@ -16,6 +16,7 @@ class EmbeddingService:
     }
 
     def __init__(self):
+        """Initialize Google Gemini embedding service with API key and detect model dimensions"""
         google_api_key = os.getenv("GOOGLE_API_KEY")
         
         if not google_api_key:
@@ -34,7 +35,7 @@ class EmbeddingService:
         print(f"📊 Embedding dimensions: {self._dimension}")
     
     def _detect_dimension(self) -> int:
-        """Dynamically detect embedding dimension by making a test API call"""
+        """Detect embedding dimension by checking known models or probing API with test query"""
         # First check known dimensions
         if self.model_name in self.KNOWN_DIMENSIONS:
             return self.KNOWN_DIMENSIONS[self.model_name]
@@ -56,7 +57,7 @@ class EmbeddingService:
             ) from e
     
     def embed_text(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text using Gemini"""
+        """Generate normalized embedding vector for a single text using Gemini API"""
         try:
             result = genai.embed_content(
                 model=self.model_name,
@@ -69,7 +70,7 @@ class EmbeddingService:
             raise RuntimeError(f"❌ Gemini embedding failed: {e}") from e
     
     def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
-        """Generate embeddings for multiple texts with parallel processing"""
+        """Generate embeddings for multiple texts in parallel using ThreadPoolExecutor for performance"""
         total = len(texts)
         if total == 0:
             return []
@@ -110,7 +111,7 @@ class EmbeddingService:
     
     @property
     def dimension(self) -> int:
-        """Get the embedding dimension for the active model"""
+        """Return embedding dimension for the active model (e.g., 768 or 3072)"""
         return self._dimension
 
 

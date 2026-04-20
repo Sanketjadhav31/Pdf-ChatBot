@@ -28,6 +28,7 @@ _SOCIAL_PREFIX_RE = re.compile(
 
 
 def _normalize_filename(value: str) -> str:
+    """Normalize filename to lowercase alphanumeric for fuzzy matching"""
     value = (value or "").strip().lower()
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
 
@@ -38,15 +39,7 @@ def _resolve_pdf_scope(
     requested_doc_ids: List[str],
     active_doc_ids: List[str],
 ) -> List[str]:
-    """
-    Resolve which PDFs should be used for retrieval for this question.
-    Priority:
-    1) Explicitly requested docs from UI.
-    2) Explicit multi-doc intent ("both pdfs", "all docs").
-    3) Filename mention in question.
-    4) Most recently active uploaded PDF in this session.
-    5) All available session docs.
-    """
+    """Determine which PDFs to use for retrieval based on explicit requests, filename mentions, or active docs"""
     if requested_doc_ids:
         return requested_doc_ids
 
@@ -103,10 +96,7 @@ def _resolve_pdf_scope(
 
 
 def _split_social_prefix(user_message: str) -> tuple[str, str]:
-    """
-    Split a leading greeting from a mixed user message.
-    Returns: (social_prefix, remainder)
-    """
+    """Extract leading greeting from mixed message, returns (social_prefix, remainder)"""
     message = (user_message or "").strip()
     match = _SOCIAL_PREFIX_RE.match(message)
     if not match:
@@ -122,9 +112,7 @@ async def chat(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ) -> ChatResponse:
-    """
-    Chat endpoint that uses RAG with real LLM (Google or Ollama).
-    """
+    """Main chat endpoint: classify message, perform RAG search, generate answer with LLM"""
     with PerformanceTimer(logger, f"Chat Request: {request.question[:50]}..."):
         # Resolve which PDFs belong to this session (DB is the source of truth).
         session_id = request.session_id or str(uuid.uuid4())
@@ -449,6 +437,7 @@ async def list_chat_sessions(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
+    """List user's chat sessions from last 7 days, sorted by most recent"""
     cutoff = datetime.utcnow() - timedelta(days=7) + timedelta(hours=5, minutes=30)
     sessions = await db.chat_sessions.find({
         "user_id": current_user["_id"],
@@ -472,6 +461,7 @@ async def get_chat_session(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
+    """Get full chat history for a session with messages, references, and linked documents"""
     session = await db.chat_sessions.find_one({
         "_id": session_id,
         "user_id": current_user["_id"]
@@ -536,6 +526,7 @@ async def delete_chat_session(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
+    """Delete chat session and all associated messages and document links"""
     session = await db.chat_sessions.find_one({
         "_id": session_id,
         "user_id": current_user["_id"]

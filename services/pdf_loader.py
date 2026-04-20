@@ -11,16 +11,7 @@ def extract_chunks_from_pdf(
     filename: str,
     file_bytes: bytes,
 ) -> List[Chunk]:
-    """
-    Basic PDF text extraction and chunking.
-
-    For step 1 we:
-    - extract page-wise text
-    - treat each page as a single chunk
-    - attach page_number metadata
-
-    Later this can be enhanced with heading detection and smarter chunking.
-    """
+    """Extract text from PDF and create page-level chunks with metadata for vector search"""
     pdf_reader = PdfReader(BytesIO(file_bytes))
     total_pages = len(pdf_reader.pages)
     print(f"📖 Total pages in PDF: {total_pages}")

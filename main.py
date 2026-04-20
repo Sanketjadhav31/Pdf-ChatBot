@@ -17,6 +17,7 @@ from services.embedding_service import embedding_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Manage application lifecycle: connect to MongoDB, load vector store, and cleanup on shutdown"""
     # Startup
     print("🚀 Starting up application...")
     await connect_to_mongodb()
@@ -95,6 +96,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """Create and configure FastAPI application with CORS, middleware, and route handlers"""
     app = FastAPI(
         title="PDF Chatbot RAG Backend",
         version="0.2.0",

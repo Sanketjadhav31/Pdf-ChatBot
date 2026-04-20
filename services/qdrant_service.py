@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import os
+from typing import List, Optional, Set, Tuple
+from pathlib import Path
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+import numpy as np
+
+from models.schemas import Chunk
+from services.embedding_service import embedding_service
+from logger_config import setup_logger, PerformanceTimer
+
+logger = setup_logger(__name__)
+
+
+class QdrantVectorStore:
+    """Qdrant-based vector store with local Docker persistence"""
+    
+    def __init__(
+        self, 
+        collection_name: str = "pdf_chunks",
+        qdrant_url: str = "http://localhost:6333"
+    ) -> None:
+        """Initialize Qdrant vector store with connection to local Docker instance"""
+        self._collection_name = collection_name
+        self._qdrant_url = qdrant_url
+        self._chunks: List[Chunk] = []  # Keep chunks in memory for metadata
+        
+        try:
+            # Connect to Qdrant
+            self._client = QdrantClient(url=self._qdrant_url)
+            logger.info(f"✅ Connected to Qdrant at {self._qdrant_url}")
+            
+            # Create collection if it doesn't exist
+            self._initialize_collection()
+            
+            # Load existing chunks metadata
+            self._load_chunks_metadata()
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Qdrant: {e}")
+            raise RuntimeError(
+                f"Could not connect to Qdrant at {self._qdrant_url}. "
+                "Make sure Qdrant Docker container is running. "
+                "Run: docker run -p 6333:6333 -p 6334:6334 "
+                "-v $(pwd)/qdrant_storage:/qdrant/storage:z qdrant/qdrant"
+            ) from e
+
+    def _initialize_collection(self) -> None:
+        """Create Qdrant collection if it doesn't exist"""
+        try:
+            collections = self._client.get_collections().collections
+            collection_names = [col.name for col in collections]
+            
+            if self._collection_name not in collection_names:
+                dimension = embedding_service.dimension
+                self._client.create_collection(
+                    collection_name=self._collection_name,
+                    vectors_config=VectorParams(
+                        size=dimension,
+                        distance=Distance.COSINE
+                    )
+                )
+                logger.info(f"✅ Created Qdrant collection: {self._collection_name}")
+                logger.info(f"📊 Vector dimensions: {dimension}")
+            else:
+                logger.info(f"📂 Using existing Qdrant collection: {self._collection_name}")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize collection: {e}")
+            raise
+
+    def _load_chunks_metadata(self) -> None:
+        """Load chunks metadata from Qdrant on startup"""
+        try:
+            # Get all points from collection
+            scroll_result = self._client.scroll(
+                collection_name=self._collection_name,
+                limit=10000,  # Adjust based on your needs
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            points = scroll_result[0]
+            self._chunks = []
+            
+            for point in points:
+                # Reconstruct Chunk from payload
+                chunk = Chunk(
+                    id=point.payload.get("chunk_id"),
+                    content=point.payload.get("content"),
+                    metadata=type('Metadata', (), {
+                        'document_id': point.payload.get("document_id"),
+                        'page_number': point.payload.get("page_number"),
+                        'document_heading': point.payload.get("document_heading"),
+                        'paragraph_heading': point.payload.get("paragraph_heading")
+                    })()
+                )
+                self._chunks.append(chunk)
+            
+            logger.info(f"✅ Loaded {len(self._chunks)} chunks from Qdrant")
+            
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load chunks metadata: {e}")
+            self._chunks = []
+
+    @property
+    def size(self) -> int:
+        """Return total number of chunks in the vector store"""
+        return len(self._chunks)
+
+    def add_chunks(self, chunks: List[Chunk]) -> None:
+        """Batch embed chunks and add to Qdrant collection"""
+        if not chunks:
+            return
+
+        # Extract all text content
+        texts = [chunk.content for chunk in chunks]
+
+        print(f"\n{'='*60}")
+        print(f"📊 QDRANT EMBEDDING PROGRESS")
+        print(f"{'='*60}")
+        print(f"Total chunks to embed: {len(texts)}")
+        print(f"Starting batch embedding...")
+
+        # Batch embed all texts
+        embeddings = embedding_service.embed_texts(texts)
+
+        # Prepare points for Qdrant
+        points = []
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            point = PointStruct(
+                id=i + len(self._chunks),  # Sequential ID
+                vector=embedding.tolist(),
+                payload={
+                    "chunk_id": chunk.id,
+                    "content": chunk.content,
+                    "document_id": chunk.metadata.document_id,
+                    "page_number": chunk.metadata.page_number,
+                    "document_heading": chunk.metadata.document_heading,
+                    "paragraph_heading": chunk.metadata.paragraph_heading
+                }
+            )
+            points.append(point)
+
+        # Upload to Qdrant
+        self._client.upsert(
+            collection_name=self._collection_name,
+            wait=True,
+            points=points
+        )
+
+        # Add chunks to memory
+        self._chunks.extend(chunks)
+
+        print(f"✅ Successfully embedded and stored {len(chunks)} chunks in Qdrant")
+        print(f"📚 Total chunks in vector store: {self.size}")
+        print(f"{'='*60}\n")
+
+    def has_document(self, document_id: str) -> bool:
+        """Check if document has any chunks in vector store"""
+        for chunk in self._chunks:
+            if chunk.metadata.document_id == document_id:
+                return True
+        return False
+
+    def delete_chunks_by_document(self, document_id: str) -> int:
+        """Remove all chunks for a document from Qdrant"""
+        try:
+            # Count chunks to delete
+            deleted_count = sum(
+                1 for chunk in self._chunks 
+                if chunk.metadata.document_id == document_id
+            )
+            
+            if deleted_count == 0:
+                return 0
+
+            # Delete from Qdrant using filter
+            self._client.delete(
+                collection_name=self._collection_name,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=document_id)
+                        )
+                    ]
+                )
+            )
+
+            # Remove from memory
+            self._chunks = [
+                chunk for chunk in self._chunks 
+                if chunk.metadata.document_id != document_id
+            ]
+
+            logger.info(f"🗑️  Deleted {deleted_count} chunks for document {document_id}")
+            logger.info(f"📚 Remaining chunks in vector store: {self.size}")
+
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to delete chunks: {e}")
+            raise
+
+    def embed_text(self, text: str) -> np.ndarray:
+        """Generate embedding for search query (for compatibility with FAISS interface)"""
+        return embedding_service.embed_text(text)
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        similarity_threshold: float = 0.1,
+        document_ids: Optional[Set[str]] = None,
+    ) -> List[Tuple[Chunk, float]]:
+        """Perform semantic search using Qdrant with cosine similarity"""
+        if not self._chunks:
+            return []
+
+        with PerformanceTimer(logger, f"Qdrant Vector Search (query: '{query[:50]}...')"):
+            # Embed query
+            query_embedding = embedding_service.embed_text(query)
+
+            # Build filter if document_ids specified
+            query_filter = None
+            if document_ids is not None:
+                query_filter = Filter(
+                    should=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=doc_id)
+                        )
+                        for doc_id in document_ids
+                    ]
+                )
+
+            # Search Qdrant
+            search_results = self._client.search(
+                collection_name=self._collection_name,
+                query_vector=query_embedding.tolist(),
+                query_filter=query_filter,
+                limit=top_k,
+                score_threshold=similarity_threshold
+            )
+
+            # Convert results to expected format
+            results: List[Tuple[Chunk, float]] = []
+            for result in search_results:
+                # Reconstruct Chunk from payload
+                chunk = Chunk(
+                    id=result.payload.get("chunk_id"),
+                    content=result.payload.get("content"),
+                    metadata=type('Metadata', (), {
+                        'document_id': result.payload.get("document_id"),
+                        'page_number': result.payload.get("page_number"),
+                        'document_heading': result.payload.get("document_heading"),
+                        'paragraph_heading': result.payload.get("paragraph_heading")
+                    })()
+                )
+                results.append((chunk, result.score))
+
+            logger.info(f"Qdrant search complete: {len(results)} results (threshold={similarity_threshold})")
+            if results:
+                logger.debug(f"Top result: Page {results[0][0].metadata.page_number}, Score: {results[0][1]:.4f}")
+        
+        return results

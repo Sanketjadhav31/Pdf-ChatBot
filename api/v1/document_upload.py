@@ -29,10 +29,7 @@ async def upload_pdf(
     gridfs = Depends(get_gridfs),
     current_user: dict = Depends(get_current_user),
 ) -> UploadResponse:
-    """
-    Upload a single PDF, save it to GridFS, and process chunks synchronously.
-    Returns after processing is complete so chat can work immediately.
-    """
+    """Upload PDF, extract text chunks, generate embeddings, and store in vector database"""
     if file.content_type != "application/pdf":
         raise ValueError("Only PDF files are supported.")
 
@@ -220,9 +217,7 @@ async def get_document_status(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Check if a document has been processed (has chunks in vector store).
-    """
+    """Check if document has been processed and has chunks in vector store"""
     # Check if document exists and belongs to user
     doc = await db.uploaded_documents.find_one({
         "_id": document_id,
@@ -250,10 +245,7 @@ async def process_document(
     gridfs = Depends(get_gridfs),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Process a document that exists in database but hasn't been chunked/embedded yet.
-    This triggers the same workflow as upload: chunking → embedding → vector store.
-    """
+    """Process existing document: extract chunks, generate embeddings, add to vector store"""
     # Check if document exists and belongs to user
     doc = await db.uploaded_documents.find_one({
         "_id": document_id,
@@ -335,9 +327,7 @@ async def view_pdf(
     gridfs = Depends(get_gridfs),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    View a PDF document by its ID from GridFS.
-    """
+    """Stream PDF file from GridFS for viewing in browser"""
     # Find the document metadata
     doc = await db.uploaded_documents.find_one({
         "_id": document_id,
@@ -377,10 +367,7 @@ async def list_documents(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    List uploaded PDFs for the current user.
-    Returns all documents - they will be processed on-demand when opened in chat.
-    """
+    """List user's uploaded PDFs from last 30 days, sorted by most recent"""
     cutoff = datetime.utcnow() - timedelta(days=30) + timedelta(hours=5, minutes=30)
     docs = await db.uploaded_documents.find({
         "user_id": current_user["_id"],
@@ -404,9 +391,7 @@ async def delete_document(
     gridfs = Depends(get_gridfs),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Delete a document and its associated chunks from the vector store and GridFS.
-    """
+    """Delete document from database, GridFS, vector store, and remove from chat sessions"""
     # Find the document in the database
     doc = await db.uploaded_documents.find_one({
         "_id": document_id,
@@ -443,10 +428,7 @@ async def cleanup_orphaned_documents(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Clean up documents that exist in database but have no chunks in vector store.
-    This can happen if upload was interrupted or failed partway through.
-    """
+    """Clean up documents in database that have no chunks in vector store (failed uploads)"""
     from services.rag_service import vector_store
     
     docs = await db.uploaded_documents.find({

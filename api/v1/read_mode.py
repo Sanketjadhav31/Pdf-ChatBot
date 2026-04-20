@@ -34,16 +34,7 @@ async def read_mode_chat(
     gridfs = Depends(get_gridfs),
     current_user: dict = Depends(get_current_user),
 ) -> ReadModeResponse:
-    """
-    Handle Read Mode chat - answer questions based on selected text.
-    
-    This endpoint:
-    1. Extracts page context from the PDF
-    2. Loads conversation history
-    3. Builds 3-layer context (selection + page + history)
-    4. Generates answer using LLM
-    5. Stores message with selection metadata
-    """
+    """Handle Read Mode chat: answer questions based on selected text and page context without RAG"""
     with PerformanceTimer(logger, f"Read Mode Chat: {request.question[:50]}..."):
         # Get or create session
         session_id = request.session_id or str(uuid.uuid4())
@@ -180,14 +171,7 @@ async def get_page_text(
     gridfs = Depends(get_gridfs),
     current_user: dict = Depends(get_current_user),
 ) -> PageTextResponse:
-    """
-    Get text content of a specific page from a PDF.
-    
-    This is useful for:
-    - Displaying page text alongside PDF
-    - Providing context for text selection
-    - Debugging text extraction
-    """
+    """Extract and return text content from specific PDF page for display or debugging"""
     # Verify document ownership
     doc = await db.uploaded_documents.find_one({
         "_id": document_id,
@@ -226,9 +210,7 @@ async def get_read_mode_session(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ) -> ReadModeHistoryResponse:
-    """
-    Get Read Mode session history with all messages and their selection context.
-    """
+    """Get Read Mode session history with all messages and their text selection context"""
     session = await db.read_mode_sessions.find_one({
         "_id": session_id,
         "user_id": current_user["_id"]
@@ -265,9 +247,7 @@ async def delete_read_mode_session(
     db = Depends(get_database),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Delete a Read Mode session and all its messages.
-    """
+    """Delete Read Mode session and all its messages"""
     session = await db.read_mode_sessions.find_one({
         "_id": session_id,
         "user_id": current_user["_id"]
@@ -286,7 +266,7 @@ async def delete_read_mode_session(
 
 
 def log_step(logger, step_name: str, details: dict):
-    """Helper to log structured step information"""
+    """Log structured step information with formatted output for debugging"""
     logger.info(f"\n{'='*60}")
     logger.info(f"📍 {step_name}")
     logger.info(f"{'='*60}")

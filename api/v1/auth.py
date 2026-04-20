@@ -24,6 +24,7 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth/register", response_model=TokenResponse)
 async def register(request: AuthRequest, db = Depends(get_database)) -> TokenResponse:
+    """Register new user with email, username, and password, returns JWT token"""
     if not request.username:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,6 +62,7 @@ async def register(request: AuthRequest, db = Depends(get_database)) -> TokenRes
 
 @router.post("/auth/login", response_model=TokenResponse)
 async def login(request: AuthRequest, db = Depends(get_database)) -> TokenResponse:
+    """Authenticate user with email and password, returns JWT token on success"""
     user = await db.users.find_one({"email": request.email.lower()})
     if not user or not verify_password(request.password, user["hashed_password"]):
         raise HTTPException(
@@ -78,4 +80,5 @@ async def login(request: AuthRequest, db = Depends(get_database)) -> TokenRespon
 
 @router.get("/auth/me", response_model=UserOut)
 async def me(current_user: dict = Depends(get_current_user)) -> UserOut:
+    """Get current authenticated user profile from JWT token"""
     return UserOut(id=current_user["_id"], email=current_user["email"], username=current_user["username"])

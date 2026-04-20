@@ -9,12 +9,14 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import faiss
 import numpy as np
+from dotenv import load_dotenv
 
 from models.schemas import ChatRequest, Chunk, Reference
 from services.embedding_service import embedding_service
 from services.llm_service import llm_service
 from logger_config import setup_logger, PerformanceTimer, log_step
 
+load_dotenv()
 logger = setup_logger(__name__)
 
 
@@ -22,6 +24,7 @@ class FAISSVectorStore:
     """FAISS-based vector store with disk persistence"""
     
     def __init__(self, persist_directory: str = "vector_store_data") -> None:
+        """Initialize FAISS vector store with disk persistence for embeddings and chunks"""
         self._chunks: List[Chunk] = []
         self._persist_dir = Path(persist_directory)
         self._persist_dir.mkdir(exist_ok=True)
@@ -41,7 +44,7 @@ class FAISSVectorStore:
         return len(self._chunks)
 
     def _load_from_disk(self) -> None:
-        """Load FAISS index and chunks from disk"""
+        """Load FAISS index and chunks from disk on startup for persistence"""
         try:
             if self._index_path.exists() and self._chunks_path.exists():
                 logger.info(f"📂 Loading vector store from disk: {self._persist_dir}")
@@ -66,7 +69,7 @@ class FAISSVectorStore:
             self._chunks = []
 
     def _save_to_disk(self) -> None:
-        """Save FAISS index and chunks to disk"""
+        """Persist FAISS index and chunks to disk after modifications"""
         try:
             logger.info(f"💾 Saving vector store to disk: {self._persist_dir}")
             
@@ -82,7 +85,7 @@ class FAISSVectorStore:
             logger.error(f"❌ Failed to save vector store to disk: {e}")
 
     def add_chunks(self, chunks: List[Chunk]) -> None:
-        """Add chunks with batch embedding and persist to disk"""
+        """Batch embed chunks, add to FAISS index, and persist to disk"""
         if not chunks:
             return
 
@@ -116,14 +119,14 @@ class FAISSVectorStore:
         self._save_to_disk()
 
     def has_document(self, document_id: str) -> bool:
-        """Check if a document has any chunks in the vector store"""
+        """Check if document has any chunks in vector store for processing status"""
         for chunk in self._chunks:
             if chunk.metadata.document_id == document_id:
                 return True
         return False
 
     def delete_chunks_by_document(self, document_id: str) -> int:
-        """Delete all chunks belonging to a specific document"""
+        """Remove all chunks for a document and rebuild FAISS index (FAISS doesn't support deletion)"""
         indices_to_keep = []
         indices_to_delete = []
         deleted_count = 0
@@ -162,7 +165,7 @@ class FAISSVectorStore:
         return deleted_count
 
     def embed_text(self, text: str) -> np.ndarray:
-        """Embed a single text query"""
+        """Generate normalized embedding for search query"""
         embedding = embedding_service.embed_text(text)
         # Normalize for cosine similarity
         embedding_array = np.array([embedding], dtype=np.float32)
@@ -176,6 +179,7 @@ class FAISSVectorStore:
         similarity_threshold: float = 0.1,
         document_ids: Optional[Set[str]] = None,
     ) -> List[Tuple[Chunk, float]]:
+        """Perform semantic search using FAISS with cosine similarity and optional document filtering"""
         if not self._chunks:
             return []
 
@@ -219,10 +223,12 @@ class FAISSVectorStore:
 
 class ChatOrchestrator:
     def __init__(self, store: FAISSVectorStore) -> None:
+        """Initialize chat orchestrator with vector store for RAG pipeline"""
         self._store = store
         self._sessions: Dict[str, List[str]] = {}
 
     def handle_chat(self, request: ChatRequest) -> dict:
+        """Orchestrate RAG pipeline: search vector store, build context, and prepare references"""
         session_id = request.session_id or str(uuid.uuid4())
         # Note: conversation history is persisted in the DB layer (api/v1/chat.py).
         # This orchestrator only builds PDF context from the vector store.
@@ -384,7 +390,23 @@ class ChatOrchestrator:
         }
 
 
-# Use FAISS vector store with persistence
-vector_store = FAISSVectorStore(persist_directory="vector_store_data")
+# Initialize vector store based on USE_QDRANT flag
+USE_QDRANT = os.getenv("USE_QDRANT", "false").lower() == "true"
+
+if USE_QDRANT:
+    logger.info("🚀 Using Qdrant vector store")
+    from services.qdrant_service import QdrantVectorStore
+    
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    collection_name = os.getenv("QDRANT_COLLECTION", "pdf_chunks")
+    
+    vector_store = QdrantVectorStore(
+        collection_name=collection_name,
+        qdrant_url=qdrant_url
+    )
+else:
+    logger.info("🚀 Using FAISS vector store")
+    vector_store = FAISSVectorStore(persist_directory="vector_store_data")
+
 chat_orchestrator = ChatOrchestrator(vector_store)
 

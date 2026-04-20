@@ -21,7 +21,7 @@ FORCE_IPV4 = os.getenv("FORCE_IPV4", "false").lower() == "true"
 
 
 def configure_custom_dns():
-    """Configure custom DNS servers if enabled"""
+    """Configure custom DNS servers if enabled to resolve MongoDB connection issues"""
     if not USE_CUSTOM_DNS:
         return
     
@@ -75,7 +75,7 @@ gridfs_bucket: Optional[AsyncIOMotorGridFSBucket] = None
 
 
 async def connect_to_mongodb():
-    """Initialize MongoDB connection with fallback support"""
+    """Initialize MongoDB connection with SRV and standard URI fallback support"""
     global mongodb_client, database, gridfs_bucket
     
     if not MONGODB_URI:
@@ -127,7 +127,7 @@ async def connect_to_mongodb():
 
 
 async def close_mongodb_connection():
-    """Close MongoDB connection"""
+    """Close MongoDB connection and cleanup resources"""
     global mongodb_client
     if mongodb_client:
         mongodb_client.close()
@@ -135,7 +135,7 @@ async def close_mongodb_connection():
 
 
 async def create_indexes():
-    """Create necessary indexes for collections"""
+    """Create database indexes for users, sessions, messages, and documents to optimize queries"""
     if database is None:
         return
     
@@ -178,7 +178,7 @@ async def create_indexes():
 
 
 def get_database():
-    """Dependency to get database instance"""
+    """FastAPI dependency to inject database instance into route handlers"""
     if database is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -188,7 +188,7 @@ def get_database():
 
 
 def get_gridfs():
-    """Dependency to get GridFS bucket instance"""
+    """FastAPI dependency to inject GridFS bucket for PDF file storage"""
     if gridfs_bucket is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -207,15 +207,18 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify plain password against bcrypt hashed password"""
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 
 def get_password_hash(password: str) -> str:
+    """Generate bcrypt hash for password storage"""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Generate JWT access token with expiration time"""
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)) + timedelta(hours=5, minutes=30)
     to_encode.update({"exp": expire})
@@ -231,6 +234,7 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db = Depends(get_database)
 ) -> Dict[str, Any]:
+    """Decode JWT token and return authenticated user from database"""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -256,10 +260,7 @@ async def ensure_embedding_index_metadata(
     embedding_dimension: int,
     index_name: str = "in_memory_default",
 ) -> None:
-    """
-    Fail fast if existing index metadata does not match active embedding config.
-    Create metadata on first run.
-    """
+    """Validate embedding model compatibility and clear incompatible embeddings on dimension mismatch"""
     if database is None:
         return
     

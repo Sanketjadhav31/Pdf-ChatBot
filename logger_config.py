@@ -10,7 +10,7 @@ from typing import Optional
 
 
 class ColoredFormatter(logging.Formatter):
-    """Custom formatter with colors for console output"""
+    """Custom log formatter that adds ANSI color codes to level names for console output"""
     
     # ANSI color codes
     COLORS = {
@@ -23,6 +23,7 @@ class ColoredFormatter(logging.Formatter):
     }
     
     def format(self, record):
+        """Apply ANSI color codes to log level names for better console readability"""
         # Add color to level name
         levelname = record.levelname
         if levelname in self.COLORS:
@@ -31,16 +32,7 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
-    """
-    Setup a logger with consistent formatting.
-    
-    Args:
-        name: Logger name (usually __name__)
-        level: Logging level (default: INFO)
-    
-    Returns:
-        Configured logger instance
-    """
+    """Create logger with colored console output and consistent formatting for debugging"""
     logger = logging.getLogger(name)
     
     # Avoid adding handlers multiple times
@@ -66,7 +58,7 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
 
 
 class PerformanceTimer:
-    """Context manager for timing operations"""
+    """Context manager for timing operations and logging duration with success/failure status"""
     
     def __init__(self, logger: logging.Logger, operation: str):
         self.logger = logger
@@ -75,6 +67,7 @@ class PerformanceTimer:
         self.end_time: Optional[datetime] = None
     
     def __enter__(self):
+        """Start timer and log operation start"""
         self.start_time = datetime.now()
         self.logger.info(f"{'='*80}")
         self.logger.info(f"⏱️  STARTED: {self.operation}")
@@ -82,6 +75,7 @@ class PerformanceTimer:
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Stop timer, log operation completion with duration and status"""
         self.end_time = datetime.now()
         duration = (self.end_time - self.start_time).total_seconds()
         
@@ -100,7 +94,7 @@ class PerformanceTimer:
         return False  # Don't suppress exceptions
     
     def elapsed(self) -> float:
-        """Get elapsed time in seconds"""
+        """Calculate elapsed time in seconds since timer start"""
         if self.start_time is None:
             return 0.0
         end = self.end_time or datetime.now()
@@ -108,7 +102,7 @@ class PerformanceTimer:
 
 
 def log_section(logger: logging.Logger, title: str, level: str = "INFO"):
-    """Log a section header"""
+    """Log formatted section header for organizing log output"""
     log_func = getattr(logger, level.lower())
     log_func(f"\n{'='*80}")
     log_func(f"📋 {title}")
@@ -116,7 +110,7 @@ def log_section(logger: logging.Logger, title: str, level: str = "INFO"):
 
 
 def log_step(logger: logging.Logger, step: str, details: dict = None):
-    """Log a step with optional details"""
+    """Log operation step with optional key-value details for debugging"""
     logger.info(f"▶️  {step}")
     if details:
         for key, value in details.items():
