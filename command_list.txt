@@ -1,23 +1,43 @@
-# Backend Commands
-poetry run uvicorn main:app --reload --port 5000
-# Or use the Poetry script
-poetry run start
+# 🚀 START EVERYTHING
+docker-compose up
 
-# Frontend Commands
-cd frontend && npm run dev
+# 🛑 STOP EVERYTHING  
+docker-compose down
 
-# Development Setup
-poetry install --with dev
-cd frontend && npm install
+# 📋 VIEW LOGS (All Services - Live)
+docker-compose logs -f
 
-# Testing
-poetry run pytest
-poetry run pytest --cov=. --cov-report=html
+# 📋 VIEW BACKEND LOGS ONLY
+docker-compose logs -f backend
 
-# Dependency Management
-poetry add <package-name>
-poetry add --group dev <package-name>
-poetry update
-poetry show
+# � VIEW FRONTEND LOGS ONLY
+docker-compose logs -f frontend
 
-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
+# 📋 VIEW LAST 50 LINES
+docker-compose logs --tail 50
+
+# 📋 VIEW LOGS WITHOUT FOLLOWING
+docker-compose logs
+
+# �🔄 REBUILD
+docker-compose up --build
+
+# ============================================
+# Alternative: Direct Docker Commands
+# ============================================
+# Backend logs
+docker logs pdf-chatbot-backend
+docker logs -f pdf-chatbot-backend          # Follow live
+docker logs --tail 100 pdf-chatbot-backend  # Last 100 lines
+
+# Frontend logs
+docker logs pdf-chatbot-frontend
+docker logs -f pdf-chatbot-frontend         # Follow live
+docker logs --tail 100 pdf-chatbot-frontend # Last 100 lines
+
+# ============================================
+# Access URLs
+# ============================================
+# Backend:  http://localhost:5000
+# Frontend: http://localhost:3000
+# Health:   http://localhost:5000/api/v1/health

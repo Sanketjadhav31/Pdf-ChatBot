@@ -398,11 +398,13 @@ if USE_QDRANT:
     from services.qdrant_service import QdrantVectorStore
     
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY")
     collection_name = os.getenv("QDRANT_COLLECTION", "pdf_chunks")
     
     vector_store = QdrantVectorStore(
         collection_name=collection_name,
-        qdrant_url=qdrant_url
+        qdrant_url=qdrant_url,
+        api_key=qdrant_api_key
     )
 else:
     logger.info("🚀 Using FAISS vector store")

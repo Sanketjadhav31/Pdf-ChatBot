@@ -22,6 +22,14 @@ services:
         value: true
       - key: FRONTEND_URL
         value: https://pdfchatbot1.netlify.app
+      - key: USE_QDRANT
+        value: true
+      - key: QDRANT_URL
+        value: https://66a1074e-7628-4d8b-8b54-42e698522acb.us-east-1-1.aws.cloud.qdrant.io:6333
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: pdf_chunks
       - key: GOOGLE_API_KEY
         sync: false
       - key: JWT_SECRET_KEY

@@ -16,22 +16,28 @@ logger = setup_logger(__name__)
 
 
 class QdrantVectorStore:
-    """Qdrant-based vector store with local Docker persistence"""
+    """Qdrant-based vector store with local Docker or Cloud persistence"""
     
     def __init__(
         self, 
         collection_name: str = "pdf_chunks",
-        qdrant_url: str = "http://localhost:6333"
+        qdrant_url: str = "http://localhost:6333",
+        api_key: Optional[str] = None
     ) -> None:
-        """Initialize Qdrant vector store with connection to local Docker instance"""
+        """Initialize Qdrant vector store with connection to local Docker or Cloud instance"""
         self._collection_name = collection_name
         self._qdrant_url = qdrant_url
+        self._api_key = api_key
         self._chunks: List[Chunk] = []  # Keep chunks in memory for metadata
         
         try:
-            # Connect to Qdrant
-            self._client = QdrantClient(url=self._qdrant_url)
-            logger.info(f"✅ Connected to Qdrant at {self._qdrant_url}")
+            # Connect to Qdrant (with or without API key)
+            if self._api_key:
+                self._client = QdrantClient(url=self._qdrant_url, api_key=self._api_key)
+                logger.info(f"✅ Connected to Qdrant Cloud at {self._qdrant_url}")
+            else:
+                self._client = QdrantClient(url=self._qdrant_url)
+                logger.info(f"✅ Connected to Qdrant at {self._qdrant_url}")
             
             # Create collection if it doesn't exist
             self._initialize_collection()
@@ -41,12 +47,18 @@ class QdrantVectorStore:
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to Qdrant: {e}")
-            raise RuntimeError(
-                f"Could not connect to Qdrant at {self._qdrant_url}. "
-                "Make sure Qdrant Docker container is running. "
-                "Run: docker run -p 6333:6333 -p 6334:6334 "
-                "-v $(pwd)/qdrant_storage:/qdrant/storage:z qdrant/qdrant"
-            ) from e
+            if self._api_key:
+                raise RuntimeError(
+                    f"Could not connect to Qdrant Cloud at {self._qdrant_url}. "
+                    "Check your QDRANT_URL and QDRANT_API_KEY environment variables."
+                ) from e
+            else:
+                raise RuntimeError(
+                    f"Could not connect to Qdrant at {self._qdrant_url}. "
+                    "Make sure Qdrant Docker container is running. "
+                    "Run: docker run -p 6333:6333 -p 6334:6334 "
+                    "-v $(pwd)/qdrant_storage:/qdrant/storage:z qdrant/qdrant"
+                ) from e
 
     def _initialize_collection(self) -> None:
         """Create Qdrant collection if it doesn't exist"""
