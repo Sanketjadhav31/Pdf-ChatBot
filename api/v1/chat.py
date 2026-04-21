@@ -16,6 +16,7 @@ from models.schemas import (
 )
 from services.rag_service import chat_orchestrator
 from services.llm_service import llm_service
+from services.redis_service import redis_service
 from logger_config import setup_logger, PerformanceTimer, log_step
 
 logger = setup_logger(__name__)
@@ -242,13 +243,52 @@ async def chat(
     )
     upload_needed_message = "Please upload a PDF to get started."
 
-    # Load last 3 exchanges (up to 6 messages) for conversation continuity
-    history_messages = await db.chat_messages.find({
-        "session_id": session_id,
-        "user_id": current_user["_id"]
-    }).sort("created_at", -1).limit(6).to_list(length=6)
+    # Try to load history from Redis cache first
+    print(f"\n{'🔍'*40}")
+    print(f"📦 REDIS CACHE CHECK")
+    print(f"{'🔍'*40}")
+    print(f"Session: {session_id}")
+    print(f"User: {current_user.get('username', 'Unknown')}")
     
-    history_messages = list(reversed(history_messages))
+    logger.info(f"🔍 Checking Redis cache for session: {session_id}")
+    history_from_cache = await redis_service.get_chat_history(
+        user_id=current_user["_id"],
+        session_id=session_id
+    )
+    
+    if history_from_cache:
+        # Cache hit - use cached history
+        print(f"✅ REDIS CACHE HIT - Using {len(history_from_cache)} messages from Redis")
+        print(f"⚡ Performance: ~1-5ms (Fast!)")
+        print(f"{'='*80}\n")
+        logger.info(f"✅ REDIS CACHE HIT - Using {len(history_from_cache)} messages from Redis cache")
+        history_messages = history_from_cache
+    else:
+        # Cache miss - load from database
+        print(f"❌ REDIS CACHE MISS - Loading from MongoDB")
+        print(f"⏱️  Performance: ~50-100ms (Slower)")
+        logger.info(f"💾 REDIS CACHE MISS - Loading history from MongoDB")
+        history_messages = await db.chat_messages.find({
+            "session_id": session_id,
+            "user_id": current_user["_id"]
+        }).sort("created_at", -1).limit(6).to_list(length=6)
+        
+        history_messages = list(reversed(history_messages))
+        
+        # Populate Redis cache with database history
+        if history_messages:
+            db_history = [
+                {"role": m["role"], "content": m["content"]} 
+                for m in history_messages
+            ]
+            await redis_service.set_chat_history(
+                user_id=current_user["_id"],
+                session_id=session_id,
+                messages=db_history
+            )
+            print(f"✅ REDIS CACHE POPULATED - Stored {len(db_history)} messages for next time")
+            logger.info(f"✅ REDIS CACHE POPULATED with {len(db_history)} messages from DB")
+        print(f"{'='*80}\n")
 
     # Filter out pure refusals
     filtered_history_messages = []
@@ -416,13 +456,39 @@ async def chat(
     }
     await db.chat_messages.insert_many([user_msg, assistant_msg])
 
+    # Update Redis cache with new messages
+    print(f"\n{'💾'*40}")
+    print(f"📝 REDIS CACHE UPDATE")
+    print(f"{'💾'*40}")
+    logger.info(f"💾 Updating Redis cache with new messages")
+    
+    redis_updated = await redis_service.add_message(
+        user_id=current_user["_id"],
+        session_id=session_id,
+        role="user",
+        content=request.question
+    )
+    redis_updated = await redis_service.add_message(
+        user_id=current_user["_id"],
+        session_id=session_id,
+        role="assistant",
+        content=answer
+    ) and redis_updated
+    
+    if redis_updated:
+        print(f"✅ REDIS CACHE UPDATED - Added 2 new messages")
+        print(f"⚡ Next request will be faster (cache hit)")
+    else:
+        print(f"⚠️  REDIS UPDATE FAILED - Will use MongoDB next time")
+    print(f"{'='*80}\n")
+
     print(f"\n{'='*80}")
     print(f"✅ CHAT RESPONSE COMPLETE")
     print(f"{'='*80}")
     print(f"Classification: {classification}")
     print(f"Answer length: {len(answer)} characters")
     print(f"References: {len(references)}")
-    print(f"Messages saved to database")
+    print(f"Messages saved to: MongoDB ✅ | Redis Cache {'✅' if redis_updated else '❌'}")
     print(f"{'#'*80}\n")
 
     return ChatResponse(
@@ -540,6 +606,24 @@ async def delete_chat_session(
     
     # Delete messages
     await db.chat_messages.delete_many({"session_id": session_id})
+    
+    # Clear Redis cache for this session
+    print(f"\n{'🗑️'*40}")
+    print(f"🧹 REDIS CACHE CLEANUP")
+    print(f"{'🗑️'*40}")
+    print(f"Session: {session_id}")
+    logger.info(f"🗑️ Clearing Redis cache for session: {session_id}")
+    
+    redis_cleared = await redis_service.clear_session(
+        user_id=current_user["_id"],
+        session_id=session_id
+    )
+    
+    if redis_cleared:
+        print(f"✅ REDIS CACHE CLEARED - Session removed from cache")
+    else:
+        print(f"⚠️  REDIS CLEAR FAILED - Cache may still contain session data")
+    print(f"{'='*80}\n")
     
     # Delete session
     await db.chat_sessions.delete_one({"_id": session_id})

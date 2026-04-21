@@ -8,7 +8,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 import numpy as np
 
-from models.schemas import Chunk
+from models.schemas import Chunk, ChunkMetadata
 from services.embedding_service import embedding_service
 from logger_config import setup_logger, PerformanceTimer
 
@@ -89,14 +89,14 @@ class QdrantVectorStore:
             for point in points:
                 # Reconstruct Chunk from payload
                 chunk = Chunk(
-                    id=point.payload.get("chunk_id"),
                     content=point.payload.get("content"),
-                    metadata=type('Metadata', (), {
-                        'document_id': point.payload.get("document_id"),
-                        'page_number': point.payload.get("page_number"),
-                        'document_heading': point.payload.get("document_heading"),
-                        'paragraph_heading': point.payload.get("paragraph_heading")
-                    })()
+                    metadata=ChunkMetadata(
+                        chunk_id=point.payload.get("chunk_id"),
+                        document_id=point.payload.get("document_id"),
+                        page_number=point.payload.get("page_number"),
+                        document_heading=point.payload.get("document_heading"),
+                        paragraph_heading=point.payload.get("paragraph_heading")
+                    )
                 )
                 self._chunks.append(chunk)
             
@@ -135,7 +135,7 @@ class QdrantVectorStore:
                 id=i + len(self._chunks),  # Sequential ID
                 vector=embedding.tolist(),
                 payload={
-                    "chunk_id": chunk.id,
+                    "chunk_id": chunk.metadata.chunk_id,
                     "content": chunk.content,
                     "document_id": chunk.metadata.document_id,
                     "page_number": chunk.metadata.page_number,
@@ -239,27 +239,27 @@ class QdrantVectorStore:
                 )
 
             # Search Qdrant
-            search_results = self._client.search(
+            search_results = self._client.query_points(
                 collection_name=self._collection_name,
-                query_vector=query_embedding.tolist(),
+                query=query_embedding.tolist(),
                 query_filter=query_filter,
                 limit=top_k,
                 score_threshold=similarity_threshold
-            )
+            ).points
 
             # Convert results to expected format
             results: List[Tuple[Chunk, float]] = []
             for result in search_results:
                 # Reconstruct Chunk from payload
                 chunk = Chunk(
-                    id=result.payload.get("chunk_id"),
                     content=result.payload.get("content"),
-                    metadata=type('Metadata', (), {
-                        'document_id': result.payload.get("document_id"),
-                        'page_number': result.payload.get("page_number"),
-                        'document_heading': result.payload.get("document_heading"),
-                        'paragraph_heading': result.payload.get("paragraph_heading")
-                    })()
+                    metadata=ChunkMetadata(
+                        chunk_id=result.payload.get("chunk_id"),
+                        document_id=result.payload.get("document_id"),
+                        page_number=result.payload.get("page_number"),
+                        document_heading=result.payload.get("document_heading"),
+                        paragraph_heading=result.payload.get("paragraph_heading")
+                    )
                 )
                 results.append((chunk, result.score))
 

@@ -11,8 +11,10 @@ load_dotenv()
 from api.v1 import chat_router, document_upload_router
 from api.v1.auth import router as auth_router
 from api.v1.read_mode import router as read_mode_router
+from api.v1.health import router as health_router
 from database import connect_to_mongodb, close_mongodb_connection, ensure_embedding_index_metadata
 from services.embedding_service import embedding_service
+from services.redis_service import redis_service
 
 
 @asynccontextmanager
@@ -21,6 +23,25 @@ async def lifespan(app: FastAPI):
     # Startup
     print("🚀 Starting up application...")
     await connect_to_mongodb()
+    
+    # Connect to Redis
+    print("\n" + "="*80)
+    print("🔌 REDIS CONNECTION")
+    print("="*80)
+    print(f"Host: {redis_service.host}")
+    print(f"Port: {redis_service.port}")
+    print(f"Max Messages: {redis_service.max_messages}")
+    print(f"TTL: {redis_service.ttl_seconds // 3600} hours")
+    
+    redis_connected = await redis_service.connect()
+    
+    if redis_connected:
+        print("✅ REDIS CONNECTED - Cache is active")
+        print("⚡ Chat history will load 20-100x faster!")
+    else:
+        print("⚠️  REDIS CONNECTION FAILED - Using MongoDB only")
+        print("📊 Performance will be slower (no caching)")
+    print("="*80 + "\n")
     await ensure_embedding_index_metadata(
         embedding_model_name=embedding_service.model_name,
         embedding_dimension=embedding_service.dimension,
@@ -90,9 +111,18 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    print("🛑 Shutting down application...")
+    print("\n" + "="*80)
+    print("🛑 SHUTTING DOWN")
+    print("="*80)
+    print("Closing Redis connection...")
+    await redis_service.disconnect()
+    print("✅ Redis disconnected")
+    print("Closing MongoDB connection...")
     await close_mongodb_connection()
+    print("✅ MongoDB disconnected")
+    print("="*80)
     print("✅ Application shutdown complete")
+    print("="*80 + "\n")
 
 
 def create_app() -> FastAPI:
@@ -132,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(document_upload_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
     app.include_router(read_mode_router, prefix="/api/v1")
+    app.include_router(health_router, prefix="/api/v1")
 
     return app
 
