@@ -1,4 +1,5 @@
 # Simple Dockerfile using requirements.txt instead of Poetry
+# Updated: 2026-04-21 - Force rebuild
 FROM python:3.11-slim
 
 WORKDIR /app
