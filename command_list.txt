@@ -1,43 +1,50 @@
-# 🚀 START EVERYTHING
-docker-compose up
+# ============================================
+# 🚀 START EVERYTHING (All in Docker)
+# ============================================
+docker-compose up -d
 
-# 🛑 STOP EVERYTHING  
+# ============================================
+# 🛑 STOP EVERYTHING
+# ============================================
 docker-compose down
 
-# 📋 VIEW LOGS (All Services - Live)
+# ============================================
+# 📋 VIEW LOGS
+# ============================================
+# All services
 docker-compose logs -f
 
-# 📋 VIEW BACKEND LOGS ONLY
+# Backend only
 docker-compose logs -f backend
 
-# � VIEW FRONTEND LOGS ONLY
+# Frontend only
 docker-compose logs -f frontend
 
-# 📋 VIEW LAST 50 LINES
-docker-compose logs --tail 50
+# Redis only
+docker-compose logs -f redis
 
-# 📋 VIEW LOGS WITHOUT FOLLOWING
-docker-compose logs
-
-# �🔄 REBUILD
-docker-compose up --build
+# Qdrant only
+docker-compose logs -f qdrant
 
 # ============================================
-# Alternative: Direct Docker Commands
+# 🔄 RESTART SERVICES
 # ============================================
-# Backend logs
-docker logs pdf-chatbot-backend
-docker logs -f pdf-chatbot-backend          # Follow live
-docker logs --tail 100 pdf-chatbot-backend  # Last 100 lines
+# Restart all
+docker-compose restart
 
-# Frontend logs
-docker logs pdf-chatbot-frontend
-docker logs -f pdf-chatbot-frontend         # Follow live
-docker logs --tail 100 pdf-chatbot-frontend # Last 100 lines
+# Restart backend only
+docker-compose restart backend
+
+# ============================================
+# 🔨 REBUILD (after code changes)
+# ============================================
+docker-compose up -d --build
 
 # ============================================
 # Access URLs
 # ============================================
-# Backend:  http://localhost:5000
 # Frontend: http://localhost:3000
+# Backend:  http://localhost:5000
+# API Docs: http://localhost:5000/docs
+# Qdrant:   http://localhost:6333/dashboard
 # Health:   http://localhost:5000/api/v1/health

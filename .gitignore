@@ -285,7 +285,9 @@ documents/
 vector_db/
 faiss_index/
 chroma_db/
-vector_store_data/
+vector_store_data/*.index
+vector_store_data/*.pkl
+!vector_store_data/.gitkeep
 qdrant_storage/
 
 # Model files (if downloading models locally)
