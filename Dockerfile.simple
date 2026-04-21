@@ -7,13 +7,20 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy requirements file
 COPY requirements.txt ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies with verbose output
+RUN pip install --no-cache-dir -v -r requirements.txt
+
+# Verify qdrant-client is installed
+RUN python -c "import qdrant_client; print(f'✅ qdrant-client version: {qdrant_client.__version__}')"
 
 # Copy application code
 COPY . .
