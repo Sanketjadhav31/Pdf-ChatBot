@@ -16,5 +16,5 @@ passlib[bcrypt]==1.7.4
 dnspython==2.7.0
 bcrypt==4.2.1
 faiss-cpu
-qdrant-client>=1.7.0
+qdrant-client==1.12.1
 redis>=5.0.0

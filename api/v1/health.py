@@ -19,7 +19,7 @@ class HealthStatus(BaseModel):
     mongodb: dict
 
 
-@router.get("/health", response_model=HealthStatus)
+@router.get("/", response_model=HealthStatus)
 async def health_check():
     """
     Check health status of all services (Redis, MongoDB).
