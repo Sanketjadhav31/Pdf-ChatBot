@@ -104,6 +104,9 @@ class QdrantVectorStore:
                     # Dimension matches - use existing collection
                     logger.info(f"📂 Using existing Qdrant collection: {self._collection_name}")
                     logger.info(f"📊 Vector dimensions: {existing_dimension}")
+                    
+                    # Ensure payload index exists (for existing collections that may not have it)
+                    self._ensure_payload_index()
             else:
                 # Collection doesn't exist - create it
                 self._client.create_collection(
@@ -126,6 +129,20 @@ class QdrantVectorStore:
         except Exception as e:
             logger.error(f"❌ Failed to initialize collection: {e}")
             raise
+
+    def _ensure_payload_index(self) -> None:
+        """Ensure payload index exists for document_id field (idempotent operation)"""
+        try:
+            # Try to create the index - Qdrant will ignore if it already exists
+            self._client.create_payload_index(
+                collection_name=self._collection_name,
+                field_name="document_id",
+                field_schema=PayloadSchemaType.KEYWORD
+            )
+            logger.info(f"🔍 Ensured payload index exists on 'document_id'")
+        except Exception as e:
+            # If index already exists, this is fine - log at debug level
+            logger.debug(f"Payload index check: {e}")
 
     def _load_chunks_metadata(self) -> None:
         """Load chunks metadata from Qdrant on startup"""
