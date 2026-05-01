@@ -2,11 +2,14 @@
 # 🚀 START EVERYTHING (All in Docker)
 # ============================================
 docker-compose up -d
-
+python -m uvicorn main:app --reload --port 10000 
 # ============================================
 # 🛑 STOP EVERYTHING
 # ============================================
 docker-compose down
+docker-compose build --no-cache backend
+docker-compose build --no-cache backend
+
 
 # ============================================
 # 📋 VIEW LOGS
@@ -16,6 +19,7 @@ docker-compose logs -f
 
 # Backend only
 docker-compose logs -f backend
+docker-compose build --no-cache backend
 
 # Frontend only
 docker-compose logs -f frontend

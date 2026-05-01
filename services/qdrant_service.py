@@ -61,24 +61,53 @@ class QdrantVectorStore:
                 ) from e
 
     def _initialize_collection(self) -> None:
-        """Create Qdrant collection if it doesn't exist"""
+        """Create Qdrant collection if it doesn't exist, or recreate if dimension mismatch"""
         try:
             collections = self._client.get_collections().collections
             collection_names = [col.name for col in collections]
+            current_dimension = embedding_service.dimension
             
-            if self._collection_name not in collection_names:
-                dimension = embedding_service.dimension
+            if self._collection_name in collection_names:
+                # Collection exists - check if dimension matches
+                collection_info = self._client.get_collection(self._collection_name)
+                existing_dimension = collection_info.config.params.vectors.size
+                
+                if existing_dimension != current_dimension:
+                    # Dimension mismatch - delete and recreate
+                    logger.warning(
+                        f"⚠️  Dimension mismatch detected in collection '{self._collection_name}': "
+                        f"existing={existing_dimension}, required={current_dimension}"
+                    )
+                    logger.info(f"🗑️  Deleting old collection with {existing_dimension} dimensions...")
+                    self._client.delete_collection(self._collection_name)
+                    logger.info(f"✅ Deleted old collection")
+                    
+                    # Create new collection with correct dimension
+                    logger.info(f"🔨 Creating new collection with {current_dimension} dimensions...")
+                    self._client.create_collection(
+                        collection_name=self._collection_name,
+                        vectors_config=VectorParams(
+                            size=current_dimension,
+                            distance=Distance.COSINE
+                        )
+                    )
+                    logger.info(f"✅ Created Qdrant collection: {self._collection_name}")
+                    logger.info(f"📊 Vector dimensions: {current_dimension}")
+                else:
+                    # Dimension matches - use existing collection
+                    logger.info(f"📂 Using existing Qdrant collection: {self._collection_name}")
+                    logger.info(f"📊 Vector dimensions: {existing_dimension}")
+            else:
+                # Collection doesn't exist - create it
                 self._client.create_collection(
                     collection_name=self._collection_name,
                     vectors_config=VectorParams(
-                        size=dimension,
+                        size=current_dimension,
                         distance=Distance.COSINE
                     )
                 )
                 logger.info(f"✅ Created Qdrant collection: {self._collection_name}")
-                logger.info(f"📊 Vector dimensions: {dimension}")
-            else:
-                logger.info(f"📂 Using existing Qdrant collection: {self._collection_name}")
+                logger.info(f"📊 Vector dimensions: {current_dimension}")
                 
         except Exception as e:
             logger.error(f"❌ Failed to initialize collection: {e}")

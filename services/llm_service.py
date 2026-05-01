@@ -1,5 +1,7 @@
 import os
 import random
+import asyncio
+import time
 from typing import Dict, List, Optional, Tuple
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -10,23 +12,53 @@ load_dotenv()
 logger = setup_logger(__name__)
 
 class LLMService:
-    """Service to handle LLM calls with Google Gemini with multiple API key support"""
+    """Service to handle LLM calls with Google Gemini or Ollama with multiple API key support"""
     
     def __init__(self):
-        """Initialize LLM service with multiple Google API keys for quota management and failover"""
-        # Load all available Google API keys
-        self.api_keys = self._load_api_keys()
-        if not self.api_keys:
-            raise ValueError("No GOOGLE_API_KEY found in environment variables")
+        """Initialize LLM service with either Ollama or Google Gemini based on USE_OLLAMA flag"""
+        self.use_ollama = os.getenv("USE_OLLAMA", "false").lower() == "true"
+        self.ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT", "300"))  # Default 5 minutes
         
-        # Initialize with first key
-        self.current_key_index = 0
-        genai.configure(api_key=self.api_keys[self.current_key_index])
-        # Use stable Gemini model
-        self.model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        
-        logger.info(f"Initialized Google Gemini model: {self.model_name}")
-        logger.info(f"Loaded {len(self.api_keys)} API key(s)")
+        if self.use_ollama:
+            # Initialize Ollama
+            try:
+                import ollama
+                self.ollama_client = ollama
+                self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+                self.model_name = os.getenv("OLLAMA_MODEL", "qwen3-vl:4b")
+                
+                # Test connection
+                try:
+                    ollama.list()
+                except Exception as conn_error:
+                    raise ConnectionError(
+                        f"❌ Cannot connect to Ollama at {self.ollama_base_url}. "
+                        f"Make sure Ollama is running. Error: {conn_error}\n"
+                        f"See OLLAMA_SETUP_GUIDE.md for installation instructions."
+                    )
+                
+                logger.info(f"Initialized Ollama model: {self.model_name}")
+                logger.info(f"Ollama URL: {self.ollama_base_url}")
+                logger.info(f"Ollama timeout: {self.ollama_timeout}s")
+            except ImportError:
+                raise ImportError(
+                    "❌ Ollama library not installed. Install it with: pip install ollama"
+                )
+        else:
+            # Initialize Google Gemini
+            # Load all available Google API keys
+            self.api_keys = self._load_api_keys()
+            if not self.api_keys:
+                raise ValueError("No GOOGLE_API_KEY found in environment variables")
+            
+            # Initialize with first key
+            self.current_key_index = 0
+            genai.configure(api_key=self.api_keys[self.current_key_index])
+            # Use stable Gemini model
+            self.model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+            
+            logger.info(f"Initialized Google Gemini model: {self.model_name}")
+            logger.info(f"Loaded {len(self.api_keys)} API key(s)")
     
     def _load_api_keys(self) -> List[str]:
         """Load all Google API keys from environment (GOOGLE_API_KEY, GOOGLE_API_KEY1, etc.)"""
@@ -71,6 +103,11 @@ class LLMService:
     
     def _make_api_call_with_retry(self, api_call_func, max_retries: int = None):
         """Execute API call with automatic retry and key rotation on quota/rate limit errors"""
+        # For Ollama, no retry logic needed (no quota limits)
+        if self.use_ollama:
+            return api_call_func()
+        
+        # For Gemini, use retry logic
         if max_retries is None:
             max_retries = len(self.api_keys)
         
@@ -119,6 +156,74 @@ class LLMService:
         """Extract first name from username for personalized responses"""
         return (username or "User").strip().split()[0] if (username or "").strip() else "User"
 
+    def _call_llm(self, prompt: str) -> str:
+        """Call LLM (Ollama or Gemini) with the given prompt"""
+        provider = "Ollama" if self.use_ollama else "Gemini"
+        logger.info(f"🤖 Calling {provider} LLM: {self.model_name}")
+        
+        if self.use_ollama:
+            # Call Ollama
+            response = self.ollama_client.generate(
+                model=self.model_name,
+                prompt=prompt
+            )
+            logger.info(f"✅ {provider} response received ({len(response['response'])} chars)")
+            return response['response']
+        else:
+            # Call Gemini
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(prompt)
+            logger.info(f"✅ {provider} response received ({len(response.text)} chars)")
+            return response.text
+    
+    def _call_llm_stream(self, prompt: str):
+        """Call LLM with streaming support (yields chunks of text)"""
+        provider = "Ollama" if self.use_ollama else "Gemini"
+        logger.info(f"🤖 Calling {provider} LLM (STREAMING): {self.model_name}")
+        
+        if self.use_ollama:
+            import time
+            start_time = time.time()
+            timeout = self.ollama_timeout
+            
+            try:
+                stream = self.ollama_client.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    stream=True,
+                    options={
+                        "num_predict": 200,  # Limit tokens for speed
+                        "temperature": 0.7,
+                        "top_p": 0.9,
+                        "top_k": 40,
+                        "num_ctx": 2048,  # Smaller context for speed
+                    }
+                )
+                
+                for chunk in stream:
+                    # Check timeout
+                    if time.time() - start_time > timeout:
+                        logger.error(f"⏱️ Ollama timeout after {timeout}s")
+                        yield "\n\n[Response timeout - the model is taking too long. Please try a shorter question or use Gemini instead.]"
+                        break
+                    
+                    if 'response' in chunk:
+                        text = chunk['response']
+                        # Skip empty chunks (Ollama bug)
+                        if text:
+                            yield text
+                        
+            except Exception as e:
+                logger.error(f"Ollama streaming error: {e}")
+                yield f"\n\n[Error: {str(e)}]"
+        else:
+            # Call Gemini with streaming
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+
     async def classify_message(
         self,
         user_message: str,
@@ -136,6 +241,15 @@ class LLMService:
     ) -> Dict[str, str]:
         """Classify message and generate response/query in single API call for performance optimization"""
         import re
+
+        # FAST PATH FOR OLLAMA: Skip classification (too slow), assume PDF_QUESTION
+        if self.use_ollama:
+            logger.info(f"⚡ Ollama fast path: Skipping classification (assuming PDF_QUESTION)")
+            return {
+                "classification": "PDF_QUESTION",
+                "social_response": None,
+                "rewritten_query": user_message,
+            }
 
         safe_message = (user_message or "").replace('"', '\\"').strip()
         first_name = self._first_name_from_username(username)
@@ -229,13 +343,10 @@ User message: "{safe_message}"
             
             # Use retry mechanism for API call
             def api_call():
-                model = genai.GenerativeModel(self.model_name)
-                response = model.generate_content(full_prompt)
-                return response
+                return self._call_llm(full_prompt)
             
-            response = self._make_api_call_with_retry(api_call)
-
-            raw = (response.text or "").strip()
+            raw = self._make_api_call_with_retry(api_call)
+            raw = (raw or "").strip()
             logger.debug(f"LLM raw response: {raw[:200]}...")
             
             # Parse the structured response
@@ -386,12 +497,10 @@ Instructions:
 
         try:
             def api_call():
-                model = genai.GenerativeModel(self.model_name)
-                response = model.generate_content(full_prompt)
-                return response
+                return self._call_llm(full_prompt)
             
-            response = self._make_api_call_with_retry(api_call)
-            llm_out = (response.text or "").strip()
+            llm_out = self._make_api_call_with_retry(api_call)
+            llm_out = (llm_out or "").strip()
             if llm_out == raw_message.strip():
                 return raw_message
             return llm_out if llm_out else raw_message
@@ -419,12 +528,10 @@ User message: "{safe_message}"
 """.strip()
 
         def api_call():
-            model = genai.GenerativeModel(self.model_name)
-            response = model.generate_content(full_prompt)
-            return response
+            return self._call_llm(full_prompt)
         
-        response = self._make_api_call_with_retry(api_call)
-        return (response.text or "").strip()
+        response_text = self._make_api_call_with_retry(api_call)
+        return (response_text or "").strip()
     
     async def generate_response(
         self,
@@ -536,21 +643,29 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
 {word_constraint}
 """.strip()
         try:
-            logger.info(f"Generating PDF answer for query: {prompt[:80]}...")
-            logger.info(f"Context length: {len(context)} chars, History: {len(history) if history else 0} msgs")
+            provider = "Ollama" if self.use_ollama else "Gemini"
+            logger.info(f"{'='*80}")
+            logger.info(f"🤖 GENERATING ANSWER WITH {provider.upper()}")
+            logger.info(f"{'='*80}")
+            logger.info(f"📝 Query: {prompt[:100]}...")
+            logger.info(f"📄 Context length: {len(context)} chars")
+            logger.info(f"💬 History: {len(history) if history else 0} messages")
+            logger.info(f"🎯 Model: {self.model_name}")
+            logger.info(f"{'='*80}")
             
             def api_call():
-                model = genai.GenerativeModel(self.model_name)
-                response = model.generate_content(full_prompt)
-                return response
+                return self._call_llm(full_prompt)
             
-            response = self._make_api_call_with_retry(api_call)
+            answer = self._make_api_call_with_retry(api_call)
             
-            answer = response.text
             answer_text = (answer or "").strip()
             
-            logger.info(f"Answer generated: {len(answer_text)} chars")
-            logger.debug(f"Answer preview: {answer_text[:150]}...")
+            logger.info(f"{'='*80}")
+            logger.info(f"✅ ANSWER GENERATED SUCCESSFULLY")
+            logger.info(f"{'='*80}")
+            logger.info(f"📊 Answer length: {len(answer_text)} chars ({len(answer_text.split())} words)")
+            logger.info(f"🤖 Provider: {provider}")
+            logger.info(f"{'='*80}")
 
             if answer_text == refusal_message:
                 return answer_text, False
@@ -558,7 +673,12 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             return answer_text, True
             
         except Exception as e:
-            logger.error(f"Gemini API error: {e}", exc_info=True)
+            logger.error(f"{'='*80}")
+            logger.error(f"❌ LLM API ERROR")
+            logger.error(f"{'='*80}")
+            logger.error(f"Provider: {provider}")
+            logger.error(f"Error: {str(e)}")
+            logger.error(f"{'='*80}", exc_info=True)
             msg = str(e).lower()
             if "429" in msg or "resource_exhausted" in msg:
                 return (
@@ -569,6 +689,278 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
                 "I apologize, but I'm unable to generate a response at the moment. Please try again shortly.",
                 False,
             )
+    
+    async def generate_response_stream(
+        self,
+        prompt: str,
+        context: str,
+        username: str = "User",
+        history: Optional[List[Dict[str, str]]] = None,
+    ):
+        """Generate PDF-grounded answer using RAG context with streaming support (yields text chunks)"""
+        import re
+
+        word_count_match = re.search(r"in (\d+) words?", prompt.lower())
+        requested_words = int(word_count_match.group(1)) if word_count_match else None
+        prompt_lower = (prompt or "").lower()
+        long_form_intent = any(
+            k in prompt_lower
+            for k in (
+                "summarize",
+                "summary",
+                "explain",
+                "point wise",
+                "point-wise",
+                "key points",
+                "elaborate",
+                "detailed",
+                "in detail",
+            )
+        )
+
+        max_word_cap = 150
+        if long_form_intent:
+            max_word_cap = 400
+        if requested_words:
+            max_word_cap = max(max_word_cap, min(requested_words + 75, 600))
+
+        word_constraint = ""
+        if requested_words:
+            word_constraint = (
+                f"\n\nIMPORTANT: Your answer MUST be approximately {requested_words} words. "
+                f"Be concise and precise."
+            )
+
+        first_name = self._first_name_from_username(username)
+
+        refusal_message = (
+            "I can only answer questions based on the uploaded PDF. "
+            "This information is not in your document."
+        )
+
+        history_block_lines: List[str] = []
+        if history:
+            for msg in history[-6:]:
+                role = (msg.get("role", "") or "").strip().lower()
+                content = (msg.get("content", "") or "").strip()
+                if not content:
+                    continue
+                history_block_lines.append(f"{role.capitalize()}: {content}")
+
+        history_block = (
+            "\n".join(history_block_lines) if history_block_lines else "(no previous exchanges)"
+        )
+
+        context = context or ""
+        context_block = context.strip() if context.strip() else "(no PDF context provided)"
+
+        formatting_instructions = """
+Response style:
+- For summaries or "key points", use short numbered points (1., 2., 3., ...).
+- Keep bullets/points short; avoid long paragraphs.
+"""
+
+        # MODIFIED: Two-step approach - first get thinking, then get answer
+        # Step 1: Get thinking only
+        thinking_only_prompt = f"""You are analyzing a user's question about a PDF document.
+
+USER QUESTION: {prompt}
+
+Write ONLY your internal reasoning (1-2 sentences) about how you will answer this question based on the PDF context below. Do NOT write the actual answer yet.
+
+PDF CONTEXT:
+{context_block}
+
+YOUR REASONING (1-2 sentences only):""".strip()
+
+        # Step 2: Get answer with the thinking prepended
+        full_prompt = f"""You are a PDF assistant helping {first_name}.
+
+IMPORTANT: Provide ONLY the answer to the user's question. Do NOT repeat your reasoning.
+
+PDF CONTEXT:
+{context_block}
+
+USER QUESTION: {prompt}
+
+RULES:
+- ONLY use the PDF context above
+- If info not in PDF: "{refusal_message}"
+- Max {max_word_cap} words
+- Use numbered points for summaries
+
+YOUR ANSWER:""".strip()
+        
+        try:
+            provider = "Ollama" if self.use_ollama else "Gemini"
+            logger.info(f"{'='*80}")
+            logger.info(f"🤖 STREAMING ANSWER WITH {provider.upper()}")
+            logger.info(f"{'='*80}")
+            logger.info(f"📝 Query: {prompt[:100]}...")
+            logger.info(f"📄 Context length: {len(context)} chars")
+            logger.info(f"💬 History: {len(history) if history else 0} messages")
+            logger.info(f"🎯 Model: {self.model_name}")
+            logger.info(f"⚡ Mode: STREAMING (real-time with thinking)")
+            logger.info(f"{'='*80}")
+            
+            # Two-step streaming: First thinking, then answer
+            provider = "Ollama" if self.use_ollama else "Gemini"
+            logger.info(f"{'='*80}")
+            logger.info(f"🤖 STREAMING ANSWER WITH {provider.upper()} (TWO-STEP)")
+            logger.info(f"{'='*80}")
+            logger.info(f"📝 Query: {prompt[:100]}...")
+            logger.info(f"📄 Context length: {len(context)} chars")
+            logger.info(f"💬 History: {len(history) if history else 0} messages")
+            logger.info(f"🎯 Model: {self.model_name}")
+            logger.info(f"⚡ Mode: STREAMING ({'single-step' if self.use_ollama else 'two-step'})")
+            logger.info(f"{'='*80}")
+            
+            # Send status
+            yield "<<<STATUS>>>🧠 Generating response..."
+            
+            if self.use_ollama:
+                # OLLAMA: Single-step - thinking + answer in one call with structured format
+                logger.info("🧠 Streaming thinking + answer from Ollama (single call)...")
+                
+                # Prompt that instructs the model to output thinking and answer in a structured way
+                structured_prompt = f"""You are a helpful PDF assistant for {first_name}.
+
+PDF CONTEXT:
+{context_block}
+
+USER QUESTION: {prompt}
+
+INSTRUCTIONS:
+1. First, write your thinking process inside [THINKING] tags
+2. Then, write your final answer inside [ANSWER] tags
+3. Keep total response under {max_word_cap} words
+
+Format:
+[THINKING]
+Your reasoning here...
+[/THINKING]
+
+[ANSWER]
+Your answer here...
+[/ANSWER]
+
+Response:""".strip()
+                
+                # Stream and parse the structured output
+                buffer = ""
+                in_thinking = False
+                in_answer = False
+                thinking_started = False
+                answer_started = False
+                
+                for chunk in self._call_llm_stream(structured_prompt):
+                    buffer += chunk
+                    
+                    # Check for [THINKING] tag
+                    if "[THINKING]" in buffer and not thinking_started:
+                        thinking_started = True
+                        in_thinking = True
+                        yield "<<<THINKING_START>>>"
+                        # Remove everything before and including [THINKING]
+                        buffer = buffer.split("[THINKING]", 1)[1]
+                    
+                    # Check for [/THINKING] tag
+                    if "[/THINKING]" in buffer and in_thinking:
+                        # Send remaining thinking text before the tag
+                        thinking_part = buffer.split("[/THINKING]", 1)[0]
+                        if thinking_part:  # Don't strip - preserve spaces
+                            yield thinking_part
+                        yield "<<<THINKING_END>>>"
+                        in_thinking = False
+                        buffer = buffer.split("[/THINKING]", 1)[1]
+                        continue
+                    
+                    # Check for [ANSWER] tag
+                    if "[ANSWER]" in buffer and not answer_started:
+                        answer_started = True
+                        in_answer = True
+                        yield "<<<STATUS>>>✍️ Generating answer..."
+                        yield "<<<ANSWER_START>>>"
+                        # Remove everything before and including [ANSWER]
+                        buffer = buffer.split("[ANSWER]", 1)[1]
+                    
+                    # Check for [/ANSWER] tag
+                    if "[/ANSWER]" in buffer and in_answer:
+                        # Send remaining answer text before the tag
+                        answer_part = buffer.split("[/ANSWER]", 1)[0]
+                        if answer_part:  # Don't strip - preserve spaces
+                            yield answer_part
+                        in_answer = False
+                        break
+                    
+                    # Stream content when we have enough in buffer (word by word)
+                    if (in_thinking or in_answer) and " " in buffer:
+                        # Find last space to get complete words
+                        last_space = buffer.rfind(" ")
+                        if last_space > 0:
+                            words_to_send = buffer[:last_space + 1]  # Include the space
+                            buffer = buffer[last_space + 1:]
+                            if words_to_send:  # Don't strip - preserve spaces!
+                                yield words_to_send
+                
+                # Send any remaining buffer content (preserve trailing space if exists)
+                if buffer and (in_thinking or in_answer):
+                    yield buffer
+                
+                # Ensure markers are sent even if tags weren't found
+                if thinking_started and in_thinking:
+                    yield "<<<THINKING_END>>>"
+                if not answer_started:
+                    yield "<<<STATUS>>>✍️ Generating answer..."
+                    yield "<<<ANSWER_START>>>"
+                        
+            else:
+                # GEMINI: Two-step approach (works better for Gemini)
+                yield "<<<THINKING_START>>>"
+                try:
+                    def thinking_call():
+                        return self._call_llm(thinking_only_prompt)
+                    
+                    thinking_text = self._make_api_call_with_retry(thinking_call)
+                    thinking_text = (thinking_text or "").strip()
+                    
+                    # Stream thinking word by word
+                    words = thinking_text.split()
+                    buffer = []
+                    for i, word in enumerate(words):
+                        buffer.append(word)
+                        if len(buffer) >= 4 or i == len(words) - 1:
+                            yield " ".join(buffer) + " "
+                            buffer = []
+                            await asyncio.sleep(0.05)
+                    
+                except Exception as e:
+                    logger.error(f"Error getting thinking: {e}")
+                    yield "Analyzing your question... "
+                
+                yield "<<<THINKING_END>>>"
+                yield "<<<ANSWER_START>>>"
+                
+                for chunk in self._call_llm_stream(full_prompt):
+                    yield chunk
+            
+            logger.info(f"{'='*80}")
+            logger.info(f"✅ STREAMING COMPLETE")
+            logger.info(f"🤖 Provider: {provider}")
+            logger.info(f"{'='*80}")
+            
+        except Exception as e:
+            logger.error(f"{'='*80}")
+            logger.error(f"❌ STREAMING ERROR")
+            logger.error(f"{'='*80}")
+            logger.error(f"Provider: {provider if 'provider' in locals() else 'Unknown'}")
+            logger.error(f"Error: {str(e)}")
+            logger.error(f"{'='*80}", exc_info=True)
+            msg = str(e).lower()
+            if "429" in msg or "resource_exhausted" in msg:
+                yield "I'm temporarily rate-limited. Please try again in a few seconds."
+            else:
+                yield "I apologize, but I'm unable to generate a response at the moment. Please try again shortly."
 
 
     async def generate_read_mode_response(
@@ -592,13 +984,10 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
                        f"Page: {len(context.get('page_text', ''))} chars")
             
             def api_call():
-                model = genai.GenerativeModel(self.model_name)
-                response = model.generate_content(full_prompt)
-                return response
+                return self._call_llm(full_prompt)
             
-            response = self._make_api_call_with_retry(api_call)
-            
-            answer_text = (response.text or "").strip()
+            answer_text = self._make_api_call_with_retry(api_call)
+            answer_text = (answer_text or "").strip()
             
             logger.info(f"Read Mode answer generated: {len(answer_text)} chars")
             logger.debug(f"Answer preview: {answer_text[:150]}...")
@@ -606,7 +995,7 @@ CRITICAL CONSTRAINT: Your answer MUST be no more than {max_word_cap} words.
             return answer_text
             
         except Exception as e:
-            logger.error(f"Gemini API error in Read Mode: {e}", exc_info=True)
+            logger.error(f"LLM API error in Read Mode: {e}", exc_info=True)
             msg = str(e).lower()
             if "429" in msg or "resource_exhausted" in msg:
                 return "I'm temporarily rate-limited. Please try again in a few seconds."

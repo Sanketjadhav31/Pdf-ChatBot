@@ -8,31 +8,64 @@ load_dotenv()
 
 
 class EmbeddingService:
-    """Google Gemini-based embedding service with dynamic dimension detection"""
+    """Embedding service supporting both Google Gemini and Ollama"""
    
     KNOWN_DIMENSIONS: dict[str, int] = {
         "models/gemini-embedding-001": 3072,
         "models/gemini-embedding-2-preview": 768,
+        "nomic-embed-text": 768,
     }
 
     def __init__(self):
-        """Initialize Google Gemini embedding service with API key and detect model dimensions"""
-        google_api_key = os.getenv("GOOGLE_API_KEY")
+        """Initialize embedding service with either Ollama or Google Gemini based on USE_OLLAMA flag"""
+        self.use_ollama = os.getenv("USE_OLLAMA", "false").lower() == "true"
         
-        if not google_api_key:
-            raise ValueError(
-                "❌ GOOGLE_API_KEY is required for embeddings. "
-                "Please set GOOGLE_API_KEY in your .env file."
-            )
-        
-        genai.configure(api_key=google_api_key)
-        self.model_name = os.getenv("EMBEDDING_MODEL_NAME", "models/gemini-embedding-001")
-        
-        # Dynamically detect embedding dimensions
-        self._dimension = self._detect_dimension()
-        
-        print(f"✅ Initialized Google Gemini embedding model: {self.model_name}")
-        print(f"📊 Embedding dimensions: {self._dimension}")
+        if self.use_ollama:
+            # Initialize Ollama
+            try:
+                import ollama
+                self.ollama_client = ollama
+                self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+                self.model_name = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+                
+                # Test connection
+                try:
+                    ollama.list()
+                except Exception as conn_error:
+                    raise ConnectionError(
+                        f"❌ Cannot connect to Ollama at {self.ollama_base_url}. "
+                        f"Make sure Ollama is running. Error: {conn_error}\n"
+                        f"See OLLAMA_SETUP_GUIDE.md for installation instructions."
+                    )
+                
+                # Dynamically detect embedding dimensions
+                self._dimension = self._detect_dimension()
+                
+                print(f"✅ Initialized Ollama embedding model: {self.model_name}")
+                print(f"🌐 Ollama URL: {self.ollama_base_url}")
+                print(f"📊 Embedding dimensions: {self._dimension}")
+            except ImportError:
+                raise ImportError(
+                    "❌ Ollama library not installed. Install it with: pip install ollama"
+                )
+        else:
+            # Initialize Google Gemini
+            google_api_key = os.getenv("GOOGLE_API_KEY")
+            
+            if not google_api_key:
+                raise ValueError(
+                    "❌ GOOGLE_API_KEY is required for embeddings. "
+                    "Please set GOOGLE_API_KEY in your .env file."
+                )
+            
+            genai.configure(api_key=google_api_key)
+            self.model_name = os.getenv("EMBEDDING_MODEL_NAME", "models/gemini-embedding-001")
+            
+            # Dynamically detect embedding dimensions
+            self._dimension = self._detect_dimension()
+            
+            print(f"✅ Initialized Google Gemini embedding model: {self.model_name}")
+            print(f"📊 Embedding dimensions: {self._dimension}")
     
     def _detect_dimension(self) -> int:
         """Detect embedding dimension by checking known models or probing API with test query"""
@@ -43,12 +76,23 @@ class EmbeddingService:
         # Otherwise, probe the API
         try:
             print(f"🔍 Detecting embedding dimensions for {self.model_name}...")
-            result = genai.embed_content(
-                model=self.model_name,
-                content="dimension probe",
-                task_type="retrieval_document"
-            )
-            dimension = len(result['embedding'])
+            
+            if self.use_ollama:
+                # Probe Ollama
+                response = self.ollama_client.embeddings(
+                    model=self.model_name,
+                    prompt="dimension probe"
+                )
+                dimension = len(response['embedding'])
+            else:
+                # Probe Google Gemini
+                result = genai.embed_content(
+                    model=self.model_name,
+                    content="dimension probe",
+                    task_type="retrieval_document"
+                )
+                dimension = len(result['embedding'])
+            
             print(f"✅ Detected {dimension} dimensions")
             return dimension
         except Exception as e:
@@ -57,17 +101,28 @@ class EmbeddingService:
             ) from e
     
     def embed_text(self, text: str) -> np.ndarray:
-        """Generate normalized embedding vector for a single text using Gemini API"""
+        """Generate normalized embedding vector for a single text using Ollama or Gemini API"""
         try:
-            result = genai.embed_content(
-                model=self.model_name,
-                content=text,
-                task_type="retrieval_document"
-            )
-            embedding = np.array(result['embedding'], dtype="float32")
+            if self.use_ollama:
+                # Use Ollama
+                response = self.ollama_client.embeddings(
+                    model=self.model_name,
+                    prompt=text
+                )
+                embedding = np.array(response['embedding'], dtype="float32")
+            else:
+                # Use Google Gemini
+                result = genai.embed_content(
+                    model=self.model_name,
+                    content=text,
+                    task_type="retrieval_document"
+                )
+                embedding = np.array(result['embedding'], dtype="float32")
+            
             return embedding
         except Exception as e:
-            raise RuntimeError(f"❌ Gemini embedding failed: {e}") from e
+            provider = "Ollama" if self.use_ollama else "Gemini"
+            raise RuntimeError(f"❌ {provider} embedding failed: {e}") from e
     
     def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings for multiple texts in parallel using ThreadPoolExecutor for performance"""
@@ -79,15 +134,26 @@ class EmbeddingService:
         max_workers = min(4, total)
 
         def _embed_indexed(index: int, text: str) -> tuple[int, np.ndarray]:
-            result = genai.embed_content(
-                model=self.model_name,
-                content=text,
-                task_type="retrieval_document"
-            )
-            embedding = np.array(result['embedding'], dtype="float32")
+            if self.use_ollama:
+                # Use Ollama
+                response = self.ollama_client.embeddings(
+                    model=self.model_name,
+                    prompt=text
+                )
+                embedding = np.array(response['embedding'], dtype="float32")
+            else:
+                # Use Google Gemini
+                result = genai.embed_content(
+                    model=self.model_name,
+                    content=text,
+                    task_type="retrieval_document"
+                )
+                embedding = np.array(result['embedding'], dtype="float32")
+            
             return index, embedding
 
-        print(f"⏳ Processing {total} embeddings with Gemini ({max_workers} workers)...")
+        provider = "Ollama" if self.use_ollama else "Gemini"
+        print(f"⏳ Processing {total} embeddings with {provider} ({max_workers} workers)...")
 
         completed = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

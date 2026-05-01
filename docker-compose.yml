@@ -1,8 +1,11 @@
 version: '3.8'
 
-# Docker Compose - Services Only (Redis + Qdrant)
+# Docker Compose - Services Only (Redis, Qdrant, Ollama)
 # Backend and Frontend run locally (not in Docker)
 # This is the recommended setup for development!
+#
+# To run backend locally: uvicorn main:app --reload --port 10000
+# To run frontend locally: cd frontend && npm run dev
 
 services:
   redis:
@@ -36,52 +39,29 @@ services:
       retries: 5
       start_period: 30s
 
-  # Backend and Frontend are commented out - run them locally instead
-  # To run backend locally: uvicorn main:app --reload --port 10000
-  # To run frontend locally: cd frontend && npm run dev
-
-  # Backend - Uncomment to run in Docker
-  backend:
-    build: .
-    container_name: pdf-chatbot-backend
-    ports:
-      - "5000:10000"
-    env_file:
-      - .env
-    volumes:
-      - ./vector_store_data:/app/vector_store_data
-    depends_on:
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:10000/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  # Frontend - Uncomment to run in Docker
-  frontend:
-    build: ./frontend
-    container_name: pdf-chatbot-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - VITE_API_URL=http://localhost:5000/api/v1
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
-    restart: unless-stopped
+  # Ollama service for local LLM (optional - uncomment to use)
+  # Uncomment this section if you want to use Ollama instead of Gemini
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: pdf-chatbot-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s
 
 volumes:
   redis_data:
     driver: local
   qdrant_storage:
+    driver: local
+  ollama_data:
     driver: local
 
 networks:

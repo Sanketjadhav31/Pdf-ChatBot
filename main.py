@@ -12,6 +12,7 @@ from api.v1 import chat_router, document_upload_router
 from api.v1.auth import router as auth_router
 from api.v1.read_mode import router as read_mode_router
 from api.v1.health import router as health_router
+from api.v1.chat_stream import router as chat_stream_router
 from database import connect_to_mongodb, close_mongodb_connection, ensure_embedding_index_metadata
 from services.embedding_service import embedding_service
 from services.redis_service import redis_service
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(document_upload_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
+    app.include_router(chat_stream_router, prefix="/api/v1")
     app.include_router(read_mode_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
 
