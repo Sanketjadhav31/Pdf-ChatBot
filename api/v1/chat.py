@@ -2,8 +2,10 @@ from datetime import datetime, timedelta
 from typing import List
 import uuid
 import re
+import json
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from database import get_current_user, get_database
 from models.schemas import (
@@ -252,7 +254,7 @@ async def chat(
     
     logger.info(f"🔍 Checking Redis cache for session: {session_id}")
     history_from_cache = await redis_service.get_chat_history(
-        user_id=current_user["_id"],
+        user_id=str(current_user["_id"]),
         session_id=session_id
     )
     
@@ -282,7 +284,7 @@ async def chat(
                 for m in history_messages
             ]
             await redis_service.set_chat_history(
-                user_id=current_user["_id"],
+                user_id=str(current_user["_id"]),
                 session_id=session_id,
                 messages=db_history
             )
@@ -463,13 +465,13 @@ async def chat(
     logger.info(f"💾 Updating Redis cache with new messages")
     
     redis_updated = await redis_service.add_message(
-        user_id=current_user["_id"],
+        user_id=str(current_user["_id"]),
         session_id=session_id,
         role="user",
         content=request.question
     )
     redis_updated = await redis_service.add_message(
-        user_id=current_user["_id"],
+        user_id=str(current_user["_id"]),
         session_id=session_id,
         role="assistant",
         content=answer
@@ -512,7 +514,7 @@ async def list_chat_sessions(
     
     return [
         ChatSessionSummary(
-            id=s["_id"],
+            id=str(s["_id"]),  # Convert ObjectId to string
             title=s.get("title"),
             created_at=s["created_at"],
             updated_at=s["updated_at"],
@@ -615,7 +617,7 @@ async def delete_chat_session(
     logger.info(f"🗑️ Clearing Redis cache for session: {session_id}")
     
     redis_cleared = await redis_service.clear_session(
-        user_id=current_user["_id"],
+        user_id=str(current_user["_id"]),
         session_id=session_id
     )
     

@@ -20,6 +20,8 @@ type Message = {
     documentHeading?: string | null;
     paragraphHeading?: string | null;
   }[];
+  thinkingSteps?: string[];  // New: Thinking process steps
+  isThinking?: boolean;  // New: Whether still thinking
 };
 
 type UploadedDocument = {
@@ -634,7 +636,7 @@ const App: React.FC = () => {
         payload.document_ids = effectiveDocsForRequest.map((d) => d.documentId);
       }
 
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -645,26 +647,261 @@ const App: React.FC = () => {
 
       if (!res.ok) throw new Error("Chat request failed");
 
-      const data = await res.json();
-      setSessionId(data.session_id);
-      setCurrentSessionId(data.session_id);
-
+      // Add a temporary "assistant" message that will be updated
+      const assistantId = `assistant-${Date.now()}`;
       setMessages((prev) => [
         ...prev,
         {
-          id: `assistant-${Date.now()}`,
+          id: assistantId,
           role: "assistant",
-          content: data.answer,
-          references: data.references?.map((ref: any) => ({
-            documentId: ref.document_id,
-            pageNumber: ref.page_number,
-            documentHeading: ref.document_heading,
-            paragraphHeading: ref.paragraph_heading,
-            snippet: ref.snippet,
-            snippetHover: ref.snippet_hover,
-          })),
+          content: "",
+          isThinking: true,
         },
       ]);
+
+      // Read the stream
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      
+      let fullAnswer = "";
+      let references: any[] = [];
+      let newSessionId = sessionId ?? currentSessionId;
+      let thinkingSteps: string[] = [];
+      let statusMessages: string[] = [];
+      let currentThinkingText = "";
+      
+      // Buffers for smooth character-by-character animation (ChatGPT style)
+      let thinkingBuffer = "";
+      let answerBuffer = "";
+      let animationInterval: NodeJS.Timeout | null = null;
+      
+      // Start smooth word-by-word animation (like ChatGPT)
+      const startAnimation = () => {
+        if (animationInterval) return;
+        
+        animationInterval = setInterval(() => {
+          let updated = false;
+          
+          // Animate thinking text (word by word for better readability)
+          if (thinkingBuffer.length > 0) {
+            // Find next word (up to space or take 3-5 chars)
+            let nextChunk = "";
+            const spaceIndex = thinkingBuffer.indexOf(" ");
+            
+            if (spaceIndex > 0 && spaceIndex < 15) {
+              // Take up to next space
+              nextChunk = thinkingBuffer.slice(0, spaceIndex + 1);
+              thinkingBuffer = thinkingBuffer.slice(spaceIndex + 1);
+            } else {
+              // Take 3-5 characters
+              const chunkSize = Math.min(4, thinkingBuffer.length);
+              nextChunk = thinkingBuffer.slice(0, chunkSize);
+              thinkingBuffer = thinkingBuffer.slice(chunkSize);
+            }
+            
+            currentThinkingText += nextChunk;
+            
+            if (thinkingSteps.length > 0 && thinkingSteps[thinkingSteps.length - 1].startsWith("💭")) {
+              thinkingSteps[thinkingSteps.length - 1] = `💭 ${currentThinkingText}`;
+            } else {
+              thinkingSteps.push(`💭 ${currentThinkingText}`);
+            }
+            updated = true;
+          }
+          
+          // Animate answer text (word by word for better readability)
+          if (answerBuffer.length > 0) {
+            // Find next word (up to space or take 3-5 chars)
+            let nextChunk = "";
+            const spaceIndex = answerBuffer.indexOf(" ");
+            
+            if (spaceIndex > 0 && spaceIndex < 15) {
+              // Take up to next space
+              nextChunk = answerBuffer.slice(0, spaceIndex + 1);
+              answerBuffer = answerBuffer.slice(spaceIndex + 1);
+            } else {
+              // Take 3-5 characters
+              const chunkSize = Math.min(4, answerBuffer.length);
+              nextChunk = answerBuffer.slice(0, chunkSize);
+              answerBuffer = answerBuffer.slice(chunkSize);
+            }
+            
+            fullAnswer += nextChunk;
+            updated = true;
+          }
+          
+          // Update UI smoothly
+          if (updated) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId
+                  ? {
+                      ...msg,
+                      content: fullAnswer,
+                      thinkingSteps: [...thinkingSteps],
+                      isThinking: answerBuffer.length > 0 || thinkingBuffer.length > 0 ? false : msg.isThinking,
+                    }
+                  : msg
+              )
+            );
+          }
+          
+          // Stop animation when buffers are empty
+          if (thinkingBuffer.length === 0 && answerBuffer.length === 0) {
+            if (animationInterval) {
+              clearInterval(animationInterval);
+              animationInterval = null;
+            }
+          }
+        }, 50); // 50ms interval = smooth word-by-word display
+      };
+      
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                
+                switch (data.type) {
+                  case 'metadata':
+                    newSessionId = data.session_id;
+                    setSessionId(data.session_id);
+                    setCurrentSessionId(data.session_id);
+                    // Replace status message (not accumulate)
+                    const metadataStatus = `🤖 Using ${data.provider} (${data.model})`;
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantId
+                          ? { ...msg, content: metadataStatus, isThinking: true }
+                          : msg
+                      )
+                    );
+                    break;
+                    
+                  case 'status':
+                    // Show status message one at a time with a small delay
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantId
+                          ? { 
+                              ...msg, 
+                              content: data.message, 
+                              isThinking: true,
+                              // Keep existing thinking steps if any
+                              thinkingSteps: msg.thinkingSteps || []
+                            }
+                          : msg
+                      )
+                    );
+                    break;
+                    
+                  case 'classification':
+                    // Replace status message (not accumulate)
+                    const classificationStatus = `📋 Message type: ${data.value}`;
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantId
+                          ? { ...msg, content: classificationStatus, isThinking: true }
+                          : msg
+                      )
+                    );
+                    break;
+                    
+                  case 'thinking':
+                    // Add to buffer for smooth character-by-character animation
+                    thinkingBuffer += data.text;
+                    startAnimation();
+                    break;
+                    
+                  case 'references':
+                    references = data.data.map((ref: any) => ({
+                      documentId: ref.document_id,
+                      pageNumber: ref.page_number,
+                      documentHeading: ref.document_heading,
+                      paragraphHeading: ref.paragraph_heading,
+                      snippet: ref.snippet,
+                      snippetHover: ref.snippet_hover,
+                    }));
+                    if (references.length > 0) {
+                      const referencesStatus = `📚 Found ${references.length} relevant sources`;
+                      setMessages((prev) =>
+                        prev.map((msg) =>
+                          msg.id === assistantId
+                            ? { ...msg, content: referencesStatus, isThinking: true }
+                            : msg
+                        )
+                      );
+                    }
+                    break;
+                    
+                  case 'content':
+                    // Add to buffer for smooth character-by-character animation
+                    answerBuffer += data.text;
+                    startAnimation();
+                    break;
+                    
+                  case 'done':
+                    // Wait for animation to complete before final update
+                    const waitForAnimation = () => {
+                      if (thinkingBuffer.length === 0 && answerBuffer.length === 0) {
+                        // Animation complete, do final update
+                        if (animationInterval) {
+                          clearInterval(animationInterval);
+                          animationInterval = null;
+                        }
+                        setMessages((prev) =>
+                          prev.map((msg) =>
+                            msg.id === assistantId
+                              ? {
+                                  ...msg,
+                                  content: fullAnswer || data.answer,
+                                  references: references.length > 0 ? references : undefined,
+                                  thinkingSteps: thinkingSteps.length > 0 ? [...thinkingSteps] : undefined,
+                                  isThinking: false,
+                                }
+                              : msg
+                          )
+                        );
+                        // Refresh chat sessions after streaming completes
+                        refreshChatSessions();
+                      } else {
+                        // Wait a bit more
+                        setTimeout(waitForAnimation, 100);
+                      }
+                    };
+                    waitForAnimation();
+                    break;
+                    
+                  case 'error':
+                    // Stop animation on error
+                    if (animationInterval) {
+                      clearInterval(animationInterval);
+                      animationInterval = null;
+                    }
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantId
+                          ? { ...msg, content: `❌ Error: ${data.message}`, isThinking: false }
+                          : msg
+                      )
+                    );
+                    break;
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e);
+              }
+            }
+          }
+        }
+      }
 
       // Ensure the sidebar shows the newly created/updated session immediately.
       await refreshChatSessions();
@@ -1030,6 +1267,8 @@ const App: React.FC = () => {
                         if (doc) setViewingDoc(doc);
                       }}
                       uploadedDocs={uploadedDocs}
+                      thinkingSteps={msg.thinkingSteps}
+                      isThinking={msg.isThinking}
                     />
                   ))}
                   <div ref={messagesEndRef} />
