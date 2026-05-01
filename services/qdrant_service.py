@@ -5,7 +5,7 @@ from typing import List, Optional, Set, Tuple
 from pathlib import Path
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, PayloadSchemaType
 import numpy as np
 
 from models.schemas import Chunk, ChunkMetadata
@@ -91,8 +91,15 @@ class QdrantVectorStore:
                             distance=Distance.COSINE
                         )
                     )
+                    # Create payload index for document_id filtering
+                    self._client.create_payload_index(
+                        collection_name=self._collection_name,
+                        field_name="document_id",
+                        field_schema=PayloadSchemaType.KEYWORD
+                    )
                     logger.info(f"✅ Created Qdrant collection: {self._collection_name}")
                     logger.info(f"📊 Vector dimensions: {current_dimension}")
+                    logger.info(f"🔍 Created payload index on 'document_id'")
                 else:
                     # Dimension matches - use existing collection
                     logger.info(f"📂 Using existing Qdrant collection: {self._collection_name}")
@@ -106,8 +113,15 @@ class QdrantVectorStore:
                         distance=Distance.COSINE
                     )
                 )
+                # Create payload index for document_id filtering
+                self._client.create_payload_index(
+                    collection_name=self._collection_name,
+                    field_name="document_id",
+                    field_schema=PayloadSchemaType.KEYWORD
+                )
                 logger.info(f"✅ Created Qdrant collection: {self._collection_name}")
                 logger.info(f"📊 Vector dimensions: {current_dimension}")
+                logger.info(f"🔍 Created payload index on 'document_id'")
                 
         except Exception as e:
             logger.error(f"❌ Failed to initialize collection: {e}")
